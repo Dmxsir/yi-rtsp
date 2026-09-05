@@ -135,10 +135,10 @@ fi
 
 # Supervisor discovery carries only the App-internal API credential and
 # connection metadata. YI account/camera credentials are never included.
-bashio::log.info "Publishing YI Home discovery endpoint host=local-yi-home port=${API_PORT}; credentials_exposed=false."
+bashio::log.info "Publishing YI Home discovery endpoint host=7adb5cbc-yi-home port=${API_PORT}; credentials_exposed=false."
 ha_config="$(
   bashio::var.json \
-    host "local-yi-home" \
+    host "7adb5cbc-yi-home" \
     port "^${API_PORT}" \
     api_version "v1" \
     api_token "${API_TOKEN}" \
