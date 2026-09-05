@@ -1,5 +1,5 @@
 name: "YI RTSP"
-version: "0.1.1"
+version: "0.1.2"
 slug: "yi_home"
 description: "YI camera RTSP support for Home Assistant"
 url: "https://github.com/Dmxsir/yi-rtsp"
