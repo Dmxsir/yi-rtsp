@@ -1,0 +1,11 @@
+# Proprietary YI artifacts must never be committed.
+yi-home.apk
+libPPPP_API.so
+*.apk
+
+# Local development output.
+__pycache__/
+*.py[cod]
+.env
+.env.local
+dist/

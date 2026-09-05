@@ -1,0 +1,9 @@
+.git
+.gitignore
+*.apk
+yi-home.apk
+libPPPP_API.so
+.env
+.env.local
+__pycache__
+*.py[cod]

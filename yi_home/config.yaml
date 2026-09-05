@@ -1,0 +1,22 @@
+name: "YI RTSP"
+version: "0.1.1"
+slug: "yi_home"
+description: "YI camera RTSP support for Home Assistant"
+url: "https://github.com/Dmxsir/yi-rtsp"
+arch:
+  - amd64
+startup: application
+boot: auto
+init: false
+stage: experimental
+apparmor: true
+discovery:
+  - yi_home
+map:
+  - share:ro
+ports:
+  8554/tcp: null
+ports_description:
+  8554/tcp: "YI Home RTSP (optional host mapping)"
+options: {}
+schema: false

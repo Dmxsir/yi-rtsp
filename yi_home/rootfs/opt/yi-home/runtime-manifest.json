@@ -1,0 +1,30 @@
+{
+  "architecture": "amd64-host/aarch64-guest",
+  "critical_artifacts": {
+    "android_linker64": {
+      "path": "opt/yi-home/runtime/bionic-root/system/bin/linker64",
+      "sha256": "ff1b4d7c23278c65df766b2b8076e11b06b9d0cc3ee35464b4539e51c97d6467",
+      "size": 2287376
+    },
+    "bionic_libc": {
+      "path": "opt/yi-home/runtime/bionic-root/system/lib64/libc.so",
+      "sha256": "276ebf6cb0be560b23aa9a38bb22d449e34bb2f9e4638b80cef2d440ee71b6c2",
+      "size": 1337968
+    },
+    "media_worker": {
+      "path": "opt/yi-home/runtime/bionic-root/data/local/tmp/yi-phase3g/android_pppp_av_stream",
+      "sha256": "e91dacc2182bf8371bfb19bf4a6063ead3a6560f5dcc898c8430f0e773f5f200",
+      "size": 69144
+    },
+    "online_worker": {
+      "path": "opt/yi-home/runtime/bionic-root/data/local/tmp/yi-online-status/android_pppp_online_probe",
+      "sha256": "23f908cf6eb14be713a1e1ddbfe66b67cc1b0fa6c9edf897c630ee657826154e",
+      "size": 68496
+    }
+  },
+  "python_source_count": 22,
+  "schema_version": 1,
+  "secrets_exposed": false,
+  "source_commit": "76596eefe45708c3124de00ceefbd4ffdcb40a22",
+  "vendor_library_packaged": false
+}

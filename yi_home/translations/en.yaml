@@ -1,0 +1,3 @@
+configuration:
+  network:
+    8554/tcp: "RTSP port for optional external consumers"
