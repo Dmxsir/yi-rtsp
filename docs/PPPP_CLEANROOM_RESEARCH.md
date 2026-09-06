@@ -51,6 +51,40 @@ The proprietary library is therefore acting primarily as the PPPP transport abst
 
 This is important: replacing PPPP does **not** require rewriting the account login, TNP authentication, media parsing, AAC/H264 handling, go2rtc publishing, Home Assistant API, or Frigate integration.
 
+## Observed vendor API surface from our own tests
+
+Previous oracle/runtime captures already reduce CR-0 substantially. One proven stream session used this sequence:
+
+```text
+PPPP_Initialize        -> 0
+PPPP_Config_Debug      -> 1              # diagnostics only
+PPPP_GetAPIVersion     -> 0xA2030401      # observed oracle build
+PPPP_Connect           -> session 1       # flag 75 in that test
+PPPP_Check             -> 0, mode 0
+PPPP_Write             -> channel 0
+PPPP_Read              -> channels 0, 2, 3
+...
+PPPP_Write             -> channel 0 / TNP stop-live 767
+PPPP_Connect_Break     -> 0
+PPPP_ForceClose        -> 0
+```
+
+The same capture proved:
+
+- channel 0 carries TNP control/authentication;
+- channel 2 and channel 3 carry media records;
+- `PPPP_Read` is used as a bounded blocking read for an exact requested length;
+- connection shutdown wakes blocked readers, which returned `-3014` in the captured run;
+- the clean transport therefore needs explicit cancellation/close semantics, not only UDP packet parsing.
+
+The current `0.2.0` private vendor library observed after Web-UI import is 243264 bytes with SHA-256:
+
+```text
+8c53f2ecc7ce6c362960af29a5d8de8396347a120dc10e88b24928437c4286eb
+```
+
+An older analysis APK contained a 243576-byte ARM64 `libPPPP_API.so`; do not assume its exact binary/API-version fingerprint is identical to the currently imported build. The API call pattern above is still directly relevant to the adapter contract.
+
 ## Evidence that YI PPPP is a CS2 fork
 
 Wladimir Palant's PPPP protocol overview identifies a distinct **Yi Technology** PPPP variant and concludes that YI appears to have licensed/forked the original CS2 Network implementation.
@@ -191,23 +225,31 @@ connect(did, device_key/license metadata, wakeup)
 check(session)
 read(session, channel, max_bytes, timeout)
 write(session, channel, bytes)
-close(session)
+connect_break()
+force_close(session)
 deinitialize()
 ```
+
+`config_debug()` and `get_api_version()` are diagnostic conveniences rather than requirements for media operation.
 
 Implementation details do not need to mimic the vendor library ABI. The adapter only needs to provide equivalent behavior to our Python/native relay boundary.
 
 ## Milestones
 
-### CR-0 — fingerprint the exact vendor surface
+### CR-0 — fingerprint the exact vendor surface — PARTIALLY COMPLETE
 
-Record, without committing the library itself:
+Known from existing captures:
 
-- SHA-256
-- ELF build ID if present
-- API version from `PPPP_GetAPIVersion`
-- exported `PPPP_*` symbols
-- dynamic calls actually used by our native workers
+- current library SHA-256 and size recorded above;
+- observed API version for the earlier oracle build: `0xA2030401`;
+- proven runtime call surface: initialize, connect, check, read, write, connect-break, force-close;
+- diagnostic calls: config-debug and get-API-version.
+
+Remaining:
+
+- ELF build ID of the current 243264-byte build, if present;
+- complete exported `PPPP_*` symbol list from that current build;
+- confirm whether the production native worker calls any additional symbol not visible in oracle logs.
 
 Deliverable: smallest possible compatibility contract.
 
@@ -291,6 +333,6 @@ Only after clean PPPP passes repeated real-world parity tests should the App sto
 
 ## Immediate next experiment
 
-The highest-value next action is **CR-0 + CR-1**, not rewriting all of PPPP immediately.
+The highest-value next action is **CR-1**, while completing the last CR-0 fingerprint items in parallel.
 
-We need to determine exactly which vendor API calls the current worker uses and record one successful vendor-backed PPPP connection at the packet level. That will tell us whether the first implementation can be LAN-only and how much of the YI-specific server state machine is truly required.
+Record one successful vendor-backed PPPP connection at packet level, then build a transport-only timeline. That will tell us whether the first implementation can be LAN-only and exactly how much of the YI-specific server state machine is required.
