@@ -308,19 +308,29 @@ Success criterion:
 
 using the existing Phase 3E TNP construction and validation rules.
 
-### CR-4 — media channels — OFFLINE IMPLEMENTED / LIVE UNPROVEN
+### CR-4 — media channels — LIVE PROVEN FOR ONE `y291ga` PATH
 
 The clean research session can now opt in to independent reliable byte streams for channels 1, 2, and 3 after the proven channel-0 startup boundary. Each channel has independent sequencing, selective ACK handling, duplicate suppression, wraparound ordering, and a configurable byte bound. CR-3 behavior is unchanged by default: non-zero DRW is still acknowledged and discarded until the CR-4 runner explicitly enables media reads. D2 remains observational.
 
 `tools/pppp_cleanroom/tnp_stream.py` reconstructs complete, size-bounded TNP units across partial/coalesced channel reads while retaining incomplete header/body state across timeouts. `tools/pppp_cleanroom/probe_media_tnp.py` reuses the existing video decode/reorder and audio decrypt/ADTS parsers for a short, bounded, manual-only validation. It does not invoke FFmpeg, publish RTSP, write media, or change production startup/transport selection. Its isolated self-test imports no App/cloud/media runtime support; the separate support-loader smoke test imports those helpers without cloud, device, TNP, or media traffic.
 
-Offline tests establish channel isolation/order/ACK/duplicate/wrap/bounds, TNP stream reconstruction, synthetic H264/AAC parser integration, STOP/CLOSE cleanup, and nested relocation/support loading. They do not prove real-device media behavior.
+Offline tests establish channel isolation/order/ACK/duplicate/wrap/bounds, TNP stream reconstruction, synthetic H264/AAC parser integration, STOP/CLOSE cleanup, and nested relocation/support loading.
+
+A controlled live run on 2026-09-06 then proved real channel-2 H.264 I-frame, channel-3 H.264 P-frame, sequence-reordered output, and channel-1 AAC through the clean transport and existing parsers on the same owned direct-LAN path. It sent `767`, closed cleanly, logged no media payload, and invoked no FFmpeg or publication path. Sanitized report: [`PPPP_CR4_LIVE_01.md`](PPPP_CR4_LIVE_01.md).
 
 Success criterion:
 
-- valid H264 frames
-- valid AAC frames where supported
-- sustained stream equivalent to the vendor path
+- valid channel-2 H264 I-frame and channel-3 H264 P-frame
+- valid channel-1 AAC
+- existing sequence reorder accepts the video frames
+
+### CR-4B — sustained media and relay/mux boundary — OFFLINE IMPLEMENTED / LIVE UNPROVEN
+
+`tools/pppp_cleanroom/probe_sustained_mux.py` extends the proven parser path without changing the CR-4 runner. It requires independently sustained I-frame, P-frame, and AAC activity spans, conservative configurable counts, continued bounded channel/TNP/pre-mux state, and the existing sequence reorder behavior. It starts the mux incrementally once the first accepted reordered video and validated AAC are available rather than retaining the full run in memory.
+
+`tools/pppp_cleanroom/mux_pipe.py` applies the existing relay's H.264/AAC copy-mux and 90 kHz SETTS expressions, continuously drains FFmpeg MPEG-TS stdout into ffprobe stdin, validates TS packet framing plus H.264 1920x1080 and AAC 16 kHz mono metadata, and bounds process waits and pump chunks. It persists and prints no media bytes. Offline tests cover duration/count gating, parser/reorder feed order, A/V offset calculation, queue bounds, starvation and transport failure propagation, TS pumping, validator EPIPE, invalid streams, early exits, timeouts, cleanup, and nested isolated loading.
+
+The initial duration/count/buffer/process defaults are experimental. Real sustained clean media and pipe-only mux validation remain unproven until the user performs the bounded manual CR-4B run.
 
 ### CR-5 — YI server rendezvous
 
@@ -350,4 +360,4 @@ Only after clean PPPP passes repeated real-world parity tests should the App sto
 
 The evidence audit, packet contract, state machine, implementation limits and PROVEN / INFERRED / UNKNOWN ledger are in [`PPPP_CLEANROOM_TRANSPORT.md`](PPPP_CLEANROOM_TRANSPORT.md).
 
-CR-2 direct F1 and CR-3 reliable channel-0/TNP through the first valid `4882` are live-proven on one owned `y291ga` direct-LAN path. CR-4 is offline implemented but remains live unproven: the next manual gate is the bounded clean media probe using the existing H264/AAC parsers, followed by `767` and close. Real-device media parsing, sustained loss behavior, other models, F2, relay, wakeup, IPv6, long-session D2 behavior, RTSP/go2rtc/Frigate parity, and production timing limits remain unknown. No RTSP/media publication path or production default is enabled by this work.
+CR-2 direct F1, CR-3 reliable channel-0/TNP through the first valid `4882`, and CR-4 real H.264 I/P plus AAC parsing are live-proven on one owned `y291ga` direct-LAN path. CR-4B sustained collection and pipe-only MPEG-TS/ffprobe validation are offline implemented but remain live unproven. Sustained loss behavior, other models, F2, relay, wakeup, IPv6, long-session D2 behavior, RTSP/go2rtc/Frigate parity, and production timing limits remain unknown. No production publication path or transport default is enabled by this work.

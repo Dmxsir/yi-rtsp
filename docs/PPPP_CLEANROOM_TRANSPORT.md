@@ -1,9 +1,10 @@
 # YI PPPP clean-room transport specification
 
 Status: offline implementation is complete for the observed F1 direct-session
-subset. CR-2 establishment and CR-3 reliable channel-0/TNP through valid `4882`
-are live-proven on one owned `y291ga` / raw model `83` direct path. CR-4 media
-channels are OFFLINE IMPLEMENTED / LIVE UNPROVEN.
+subset. CR-2 establishment, CR-3 reliable channel-0/TNP through valid `4882`,
+and CR-4 real H.264 I/P plus AAC parsing are live-proven on one owned `y291ga`
+/ raw model `83` direct path. CR-4B sustained media/mux is OFFLINE IMPLEMENTED
+/ LIVE UNPROVEN.
 
 This specification contains only sanitized transport observations. It does not
 contain a real device identifier, endpoint, InitString, license, key, password,
@@ -58,9 +59,13 @@ TNP payload, media payload, pcap, APK, or proprietary library.
   reconstructed ordered response bytes, validated the first expected `4882`,
   sent `767`, and closed without the proprietary library performing transport
   or channel I/O.
+- A controlled CR-4 run on that path reconstructed independent channel-1/2/3
+  TNP records and passed real H.264 I/P plus AAC through the existing parsers
+  and video reorder logic before stop and close.
 
-Sanitized live evidence: [`PPPP_CR2_LIVE_01.md`](PPPP_CR2_LIVE_01.md) and
-[`PPPP_CR3_LIVE_01.md`](PPPP_CR3_LIVE_01.md).
+Sanitized live evidence: [`PPPP_CR2_LIVE_01.md`](PPPP_CR2_LIVE_01.md),
+[`PPPP_CR3_LIVE_01.md`](PPPP_CR3_LIVE_01.md), and
+[`PPPP_CR4_LIVE_01.md`](PPPP_CR4_LIVE_01.md).
 
 ### INFERRED
 
@@ -88,7 +93,8 @@ Sanitized live evidence: [`PPPP_CR2_LIVE_01.md`](PPPP_CR2_LIVE_01.md) and
 - ALIVE four-byte field semantics and whether other models require other values.
 - Relay, wakeup, F2, IPv6, and non-direct paths.
 - Whether CLOSE has an acknowledgement; none was observed.
-- Clean media-channel parsing on real hardware and sustained media under loss.
+- Sustained clean media on real hardware and behavior under loss.
+- Clean-media MPEG-TS/ffprobe validation on the live path.
 - RTSP/go2rtc/Frigate parity through the clean transport.
 - Production timing, retry, window, chunk, buffer, and timeout limits.
 
@@ -236,7 +242,7 @@ controlled run recorded in [`PPPP_CR3_LIVE_01.md`](PPPP_CR3_LIVE_01.md) proved
 that boundary on one owned direct `y291ga` path. RTSP/media publication and
 production transport selection remain out of scope.
 
-## CR-4 media-channel model — OFFLINE IMPLEMENTED / LIVE UNPROVEN
+## CR-4 media-channel model — LIVE PROVEN
 
 The CR-3 session keeps its original payload-blind behavior unless a research
 caller explicitly enables media reads. `probe_media_tnp.py` does so only after
@@ -257,9 +263,32 @@ payload, writes no media, invokes no FFmpeg/RTSP path, and always attempts `767`
 and transport close after startup.
 
 Offline tests prove the implemented channel, stream-reader, synthetic parser,
-cleanup, self-test, support-loader, and nested-relocation mechanics. They do not
-prove camera media timing, real-device parsing, sustained loss behavior, or
-production parity.
+cleanup, self-test, support-loader, and nested-relocation mechanics. The live
+run recorded in [`PPPP_CR4_LIVE_01.md`](PPPP_CR4_LIVE_01.md) additionally
+proved real H.264 I/P and AAC parsing on one owned direct path. Sustained media,
+loss behavior, and production parity remain unproven.
+
+## CR-4B sustained media/mux model — OFFLINE IMPLEMENTED / LIVE UNPROVEN
+
+`probe_sustained_mux.py` preserves the proven startup and media parser path, but
+requires valid I, P, and AAC observations to span the configured minimum active
+window. Counts are only a secondary guard and cannot satisfy the duration gate.
+It bounds reliable/TNP buffers, pre-mux frames and bytes, pump chunks, record
+counts, starvation intervals, and child waits. D2 remains observational and
+session reads continue the existing keepalive/remote-close behavior.
+
+Once the existing reorder logic emits video and the existing AAC parser accepts
+audio, the runner starts an incremental pipe-only mux. `mux_pipe.py` reuses the
+production relay's `_setts` expressions and equivalent H.264/AAC copy-mux
+options, continuously pumps MPEG-TS stdout into ffprobe stdin, validates 188-byte
+sync framing and the expected H.264 1920x1080 plus AAC 16 kHz mono metadata, and
+normalizes validator EPIPE only when final metadata is valid. It writes no media
+or capture file and prints no payload or absolute camera timestamp.
+
+Offline tests establish the duration gate, parser/reorder feed boundary, A/V
+offset, bounded pre-mux state, starvation/error propagation, output draining,
+metadata rejection, EPIPE, early-exit/timeout cleanup, and nested isolation.
+They do not establish sustained hardware or live mux success.
 
 ## Running the safe checks
 
@@ -270,7 +299,10 @@ python3 tools/pppp_cleanroom/probe_legacy_punch.py --self-test
 python3 tools/pppp_cleanroom/probe_channel0_tnp.py --self-test
 python3 tools/pppp_cleanroom/probe_media_tnp.py --self-test
 python3 tools/pppp_cleanroom/probe_media_tnp.py --support-smoke-test
-python3 -m unittest tests.test_pppp_cleanroom tests.test_pppp_cr4 -v
+python3 tools/pppp_cleanroom/probe_sustained_mux.py --self-test
+python3 tools/pppp_cleanroom/probe_sustained_mux.py --support-smoke-test
+python3 tools/pppp_cleanroom/probe_sustained_mux.py --mux-support-smoke-test
+python3 -m unittest tests.test_pppp_cleanroom tests.test_pppp_cr4 tests.test_pppp_cr4b -v
 ```
 
 For the offline CR-3 relocation check, keep its four clean-room files together:
@@ -300,6 +332,11 @@ python3 /tmp/yi-cr4/tools/pppp_cleanroom/probe_media_tnp.py --self-test
 python3 /tmp/yi-cr4/tools/pppp_cleanroom/probe_media_tnp.py --support-smoke-test
 ```
 
+For CR-4B use the same structure under `/tmp/yi-cr4b`, adding
+`probe_sustained_mux.py` and `mux_pipe.py`. Self-test and support/mux smoke modes
+perform no cloud or device traffic; the mux smoke only checks executable
+availability and command construction and starts no process.
+
 ## Current progress
 
 ### PROVEN
@@ -326,6 +363,10 @@ python3 /tmp/yi-cr4/tools/pppp_cleanroom/probe_media_tnp.py --support-smoke-test
   media sent.
 - The same owned path completed CR-3 reliable channel-0/TNP through the first
   valid `4882`, then `767` and close.
+- The same owned path completed CR-4 with real H.264 I/P reorder and AAC parser
+  acceptance through clean media channels, then `767` and close.
+- CR-4B duration/count gating, parser-to-mux ordering, bounded queues, pipe-only
+  TS pumping/metadata validation, cleanup, and relocation pass offline tests.
 
 ### INFERRED
 
@@ -333,11 +374,13 @@ python3 /tmp/yi-cr4/tools/pppp_cleanroom/probe_media_tnp.py --support-smoke-test
   sufficient for a short media validation.
 - Retry/window/chunk/buffer/keepalive/timeout defaults and any new media timing
   assumptions are experimental until measured live.
+- Mux timing beyond the already-used SETTS expressions remains inferred for the
+  clean live path.
 
 ### UNKNOWN
 
 - Legacy-punch acceptance on other YI models/firmware and non-direct paths.
 - Loss behavior and long-session D2 requirements on YI hardware.
-- Clean media parsing on real hardware and sustained media under loss.
+- Sustained clean media and clean-media MPEG-TS/ffprobe success on real hardware.
 - F2, relay, wakeup, IPv6, RTSP/go2rtc/Frigate parity, and production timing
   limits.
