@@ -4,24 +4,99 @@ set -euo pipefail
 APP_ROOT="/opt/yi-home/app"
 RUNTIME_ROOT="/opt/yi-home/runtime/bionic-root"
 API_PORT=8099
+UPLOAD_PORT=8098
 RTSP_PORT=8554
 TOKEN_FILE="/data/backend-api-token"
 ENV_FILE="/data/yi.env"
 BACKEND_PID=""
+UPLOAD_PID=""
 BACKEND_STOP_TIMEOUT_SECONDS=20
+BOOTSTRAP_LOG="/tmp/yi-vendor-bootstrap.log"
 
 mkdir -p /data
 chmod 0700 /data 2>/dev/null || true
 
-# Import the user-supplied official runtime once, then attach it at the two
-# proven Bionic guest paths. Only symlinks enter the ephemeral packaged tree;
-# the accepted vendor bytes remain under persistent private App data.
-python3 "${APP_ROOT}/yi_vendor_bootstrap.py" \
+terminate_backend() {
+  local pid="${BACKEND_PID}"
+  if [[ -z "${pid}" ]] || ! kill -0 "${pid}" 2>/dev/null; then
+    return
+  fi
+
+  bashio::log.info "Stopping YI Home backend gracefully..."
+  kill -TERM "${pid}" 2>/dev/null || true
+
+  local ticks=$((BACKEND_STOP_TIMEOUT_SECONDS * 2))
+  for _ in $(seq 1 "${ticks}"); do
+    if ! kill -0 "${pid}" 2>/dev/null; then
+      wait "${pid}" 2>/dev/null || true
+      BACKEND_PID=""
+      bashio::log.info "YI Home backend stopped cleanly."
+      return
+    fi
+    sleep 0.5
+  done
+
+  bashio::log.warning "YI Home backend exceeded the shutdown grace period; forcing termination."
+  kill -KILL "${pid}" 2>/dev/null || true
+  wait "${pid}" 2>/dev/null || true
+  BACKEND_PID=""
+}
+
+terminate_upload_ui() {
+  local pid="${UPLOAD_PID}"
+  if [[ -z "${pid}" ]] || ! kill -0 "${pid}" 2>/dev/null; then
+    return
+  fi
+  kill -TERM "${pid}" 2>/dev/null || true
+  wait "${pid}" 2>/dev/null || true
+  UPLOAD_PID=""
+}
+
+terminate_all() {
+  terminate_backend
+  terminate_upload_ui
+}
+trap terminate_all TERM INT
+
+bashio::log.info "Starting YI RTSP setup Web UI on Home Assistant Ingress..."
+python3 "${APP_ROOT}/yi_vendor_upload.py" \
+  --bind 0.0.0.0 \
+  --port "${UPLOAD_PORT}" \
   --data-dir /data \
-  --share-dir /share/yi_rtsp \
-  --runtime-root "${RUNTIME_ROOT}" \
-  || bashio::exit.nok \
-    "Vendor runtime unavailable. Place the official YI Home APK at /share/yi_rtsp/yi-home.apk."
+  --runtime-root "${RUNTIME_ROOT}" &
+UPLOAD_PID=$!
+sleep 0.2
+if ! kill -0 "${UPLOAD_PID}" 2>/dev/null; then
+  wait "${UPLOAD_PID}" 2>/dev/null || true
+  bashio::exit.nok "YI RTSP setup Web UI failed to start."
+fi
+
+# Reuse an already imported private vendor library, or keep the App alive while
+# the user uploads the official YI Home APK through Home Assistant Ingress.
+if ! python3 "${APP_ROOT}/yi_vendor_bootstrap.py" \
+    --data-dir /data \
+    --share-dir /share/yi_rtsp \
+    --runtime-root "${RUNTIME_ROOT}"; then
+  bashio::log.warning "YI vendor runtime is not installed yet. Open the YI RTSP Web UI and upload the official YI Home APK."
+  bashio::log.info "The App will continue startup automatically after a valid APK is imported."
+
+  while true; do
+    if ! kill -0 "${UPLOAD_PID}" 2>/dev/null; then
+      wait "${UPLOAD_PID}" 2>/dev/null || true
+      bashio::exit.nok "YI RTSP setup Web UI exited before the vendor runtime was installed."
+    fi
+
+    if python3 "${APP_ROOT}/yi_vendor_bootstrap.py" \
+        --data-dir /data \
+        --share-dir /share/yi_rtsp \
+        --runtime-root "${RUNTIME_ROOT}" >"${BOOTSTRAP_LOG}" 2>&1; then
+      cat "${BOOTSTRAP_LOG}"
+      break
+    fi
+    sleep 1
+  done
+fi
+rm -f "${BOOTSTRAP_LOG}"
 
 TOKEN_STATE="reused"
 if [[ ! -s "${TOKEN_FILE}" ]]; then
@@ -47,8 +122,6 @@ fi
 bashio::log.info "Backend API token ${TOKEN_STATE}; mode=${TOKEN_MODE}; value_exposed=false."
 API_TOKEN="$(cat "${TOKEN_FILE}")"
 
-# Phase 6D.2 will populate this file through the authenticated internal API.
-# Keeping an empty restrictive file lets the App/API boot before account setup.
 if [[ ! -e "${ENV_FILE}" ]]; then
   umask 077
   : >"${ENV_FILE}"
@@ -58,37 +131,6 @@ chmod 0600 "${ENV_FILE}"
 export YI_ADDON_API_TOKEN="${API_TOKEN}"
 export PYTHONUNBUFFERED=1
 
-terminate_backend() {
-  local pid="${BACKEND_PID}"
-  if [[ -z "${pid}" ]] || ! kill -0 "${pid}" 2>/dev/null; then
-    return
-  fi
-
-  bashio::log.info "Stopping YI Home backend gracefully..."
-  kill -TERM "${pid}" 2>/dev/null || true
-
-  # Never let an App stop/restart block indefinitely on the backend. The
-  # backend normally shuts down in a few seconds; this bounded grace period
-  # still gives camera runtimes and go2rtc time to terminate cleanly.
-  local ticks=$((BACKEND_STOP_TIMEOUT_SECONDS * 2))
-  for _ in $(seq 1 "${ticks}"); do
-    if ! kill -0 "${pid}" 2>/dev/null; then
-      wait "${pid}" 2>/dev/null || true
-      bashio::log.info "YI Home backend stopped cleanly."
-      return
-    fi
-    sleep 0.5
-  done
-
-  bashio::log.warning "YI Home backend exceeded the shutdown grace period; forcing termination."
-  kill -KILL "${pid}" 2>/dev/null || true
-  wait "${pid}" 2>/dev/null || true
-}
-trap terminate_backend TERM INT
-
-# One-shot, secret-safe environment fingerprint. This intentionally runs before
-# the backend starts and does not add a resident diagnostic process or touch the
-# media path. It exists only to identify mutable base-image/APK runtime versions.
 QEMU_VERSION="$(qemu-aarch64 --version 2>/dev/null | head -n 1 || true)"
 PYTHON_VERSION="$(python3 --version 2>&1 | head -n 1 || true)"
 QEMU_PACKAGE="$(apk info -v qemu-aarch64 2>/dev/null | head -n 1 || true)"
@@ -123,18 +165,18 @@ for _ in $(seq 1 120); do
   fi
   if ! kill -0 "${BACKEND_PID}" 2>/dev/null; then
     wait "${BACKEND_PID}" || true
+    BACKEND_PID=""
+    terminate_upload_ui
     bashio::exit.nok "YI Home backend exited before its health API became ready."
   fi
   sleep 0.5
 done
 
 if [[ "${ready}" != true ]]; then
-  terminate_backend
+  terminate_all
   bashio::exit.nok "YI Home backend health API did not become ready."
 fi
 
-# Supervisor discovery carries only the App-internal API credential and
-# connection metadata. YI account/camera credentials are never included.
 bashio::log.info "Publishing YI Home discovery endpoint host=7adb5cbc-yi-home port=${API_PORT}; credentials_exposed=false."
 ha_config="$(
   bashio::var.json \
@@ -156,4 +198,5 @@ wait "${BACKEND_PID}"
 rc=$?
 set -e
 BACKEND_PID=""
+terminate_upload_ui
 exit "${rc}"
