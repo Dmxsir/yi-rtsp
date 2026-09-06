@@ -373,20 +373,29 @@ class ReliableChannel:
     channel: int
     max_payload: int = 1024
     receive_window: int = 4096
+    max_buffered_bytes: int | None = None
+    start_at_first_packet: bool = False
     next_send: int = 0
     next_receive: int = 0
     _queued: bytearray = field(default_factory=bytearray, init=False, repr=False)
     _pending: dict[int, _Pending] = field(default_factory=dict, init=False, repr=False)
     _reorder: dict[int, bytes] = field(default_factory=dict, init=False, repr=False)
     _readable: bytearray = field(default_factory=bytearray, init=False, repr=False)
+    _buffered_bytes: int = field(default=0, init=False, repr=False)
+    _receive_started: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not 0 <= self.channel <= 0xFF:
             raise ValueError("channel must fit in one byte")
-        if self.max_payload < 1 or not 1 <= self.receive_window < 0x8000:
+        if (
+            self.max_payload < 1
+            or not 1 <= self.receive_window < 0x8000
+            or (self.max_buffered_bytes is not None and self.max_buffered_bytes < 1)
+        ):
             raise ValueError("invalid reliable-channel limits")
         self.next_send %= SEQUENCE_MODULUS
         self.next_receive %= SEQUENCE_MODULUS
+        self._receive_started = not self.start_at_first_packet
 
     def queue(self, *chunks: bytes) -> None:
         for chunk in chunks:
@@ -433,8 +442,12 @@ class ReliableChannel:
     def receive(self, packet: DrwPacket) -> int | None:
         if packet.channel != self.channel:
             raise ValueError("DRW channel mismatch")
+        if not self._receive_started:
+            self.next_receive = packet.sequence
+            self._receive_started = True
         distance = (packet.sequence - self.next_receive) % SEQUENCE_MODULUS
         if distance == 0:
+            self._reserve(len(packet.data))
             self._readable.extend(packet.data)
             self.next_receive = (self.next_receive + 1) % SEQUENCE_MODULUS
             while self.next_receive in self._reorder:
@@ -442,11 +455,21 @@ class ReliableChannel:
                 self.next_receive = (self.next_receive + 1) % SEQUENCE_MODULUS
             return packet.sequence
         if 0 < distance <= self.receive_window:
-            self._reorder.setdefault(packet.sequence, packet.data)
+            if packet.sequence not in self._reorder:
+                self._reserve(len(packet.data))
+                self._reorder[packet.sequence] = packet.data
             return packet.sequence
         if distance > 0x8000:
             return packet.sequence  # Old duplicate: acknowledge without re-delivery.
         return None  # Too far ahead or exactly ambiguous at half the sequence space.
+
+    def _reserve(self, size: int) -> None:
+        if (
+            self.max_buffered_bytes is not None
+            and self._buffered_bytes + size > self.max_buffered_bytes
+        ):
+            raise BufferError("reliable receive buffer limit exceeded")
+        self._buffered_bytes += size
 
     def read(self, max_bytes: int) -> bytes:
         if max_bytes < 1:
@@ -454,11 +477,16 @@ class ReliableChannel:
         size = min(max_bytes, len(self._readable))
         data = bytes(self._readable[:size])
         del self._readable[:size]
+        self._buffered_bytes -= size
         return data
 
     @property
     def pending_sequences(self) -> tuple[int, ...]:
         return tuple(self._pending)
+
+    @property
+    def buffered_bytes(self) -> int:
+        return self._buffered_bytes
 
 
 def selective_ack(channel: int, sequences: Iterable[int]) -> DrwAck:

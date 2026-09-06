@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Research-only clean PPPP session for reliable channel-0 experiments."""
+"""Research-only clean PPPP session for reliable channel experiments."""
 from __future__ import annotations
 
 import select
@@ -63,7 +63,7 @@ class TransportError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class ExperimentalPolicy:
-    """Unproven CR-3 timing/window defaults; every value is configurable."""
+    """Unproven transport timing/window defaults; every value is configurable."""
 
     handshake_timeout: float = 4.0
     keepalive_timeout: float = 0.8
@@ -74,6 +74,8 @@ class ExperimentalPolicy:
     punch_repeat: int = 3
     max_payload: int = 1024
     receive_window: int = 4096
+    control_buffer_bytes: int | None = None
+    media_buffer_bytes: int = 2 * 1024 * 1024 + 32
 
     def __post_init__(self) -> None:
         positive = (
@@ -85,12 +87,17 @@ class ExperimentalPolicy:
         )
         if any(value <= 0 for value in positive):
             raise ValueError("experimental timeouts must be positive")
-        if not 1 <= self.punch_repeat <= 6 or self.max_attempts < 1:
+        if (
+            not 1 <= self.punch_repeat <= 6
+            or self.max_attempts < 1
+            or (self.control_buffer_bytes is not None and self.control_buffer_bytes < 1)
+            or self.media_buffer_bytes < 1
+        ):
             raise ValueError("invalid experimental retry policy")
 
 
 class CleanPpppSession:
-    """Minimal UDP PPPP session with one reliable channel-0 byte stream."""
+    """Minimal UDP PPPP session with opt-in reliable channel byte streams."""
 
     def __init__(
         self,
@@ -105,7 +112,9 @@ class CleanPpppSession:
             0,
             max_payload=self.policy.max_payload,
             receive_window=self.policy.receive_window,
+            max_buffered_bytes=self.policy.control_buffer_bytes,
         )
+        self._channels = {0: self.channel0}
         self.state: Handshake | None = None
         self._socket: socket.socket | None = None
         self._peer: tuple[str, int] | None = None
@@ -118,6 +127,24 @@ class CleanPpppSession:
         self.drw_sent = 0
         self.drw_retried = 0
         self.drw_acked = 0
+
+    def enable_read_channels(self, channels: tuple[int, ...] = (1, 2, 3)) -> None:
+        """Opt in to bounded media buffering after CR-3 authentication."""
+        if not self.established:
+            raise TransportError("SESSION_NOT_ESTABLISHED")
+        for channel in channels:
+            if channel not in (1, 2, 3):
+                raise ValueError("research media channels must be 1, 2, or 3")
+            self._channels.setdefault(
+                channel,
+                ReliableChannel(
+                    channel,
+                    max_payload=self.policy.max_payload,
+                    receive_window=self.policy.receive_window,
+                    max_buffered_bytes=self.policy.media_buffer_bytes,
+                    start_at_first_packet=True,
+                ),
+            )
 
     @staticmethod
     def _route_local_ip(server: tuple[str, int]) -> str:
@@ -233,6 +260,14 @@ class CleanPpppSession:
         if not self.established:
             raise TransportError("SESSION_NOT_ESTABLISHED")
 
+    def _read_channel(self, channel: int) -> ReliableChannel:
+        if not self.established:
+            raise TransportError("SESSION_NOT_ESTABLISHED")
+        try:
+            return self._channels[channel]
+        except KeyError as exc:
+            raise ValueError("channel is not enabled for reading") from exc
+
     def write_channel(self, channel: int, data: bytes) -> None:
         self._require_channel0(channel)
         self.channel0.queue(data)
@@ -266,10 +301,15 @@ class CleanPpppSession:
             except ValueError:
                 self.malformed_ignored += 1
                 return
-            if drw.channel == 0:
-                sequence = self.channel0.receive(drw)
+            target = self._channels.get(drw.channel)
+            if target is not None:
+                try:
+                    sequence = target.receive(drw)
+                except BufferError as exc:
+                    category = "CONTROL_BUFFER_LIMIT" if drw.channel == 0 else "MEDIA_BUFFER_LIMIT"
+                    raise TransportError(category) from exc
                 if sequence is not None:
-                    self._send(selective_ack(0, (sequence,)).to_f1(), peer)
+                    self._send(selective_ack(drw.channel, (sequence,)).to_f1(), peer)
             else:
                 self.nonzero_drw_discarded += 1
                 self._send(selective_ack(drw.channel, (drw.sequence,)).to_f1(), peer)
@@ -280,8 +320,9 @@ class CleanPpppSession:
             except ValueError:
                 self.malformed_ignored += 1
                 return
-            if ack.channel == 0:
-                self.drw_acked += self.channel0.acknowledge(ack)
+            target = self._channels.get(ack.channel)
+            if target is not None:
+                self.drw_acked += target.acknowledge(ack)
             return
         if packet.opcode == Opcode.YI_DRW_ACK:
             try:
@@ -292,17 +333,22 @@ class CleanPpppSession:
             self.d2_observed += 1
 
     def _service(self, timeout: float) -> None:
-        self._require_channel0(0)
+        if not self.established:
+            raise TransportError("SESSION_NOT_ESTABLISHED")
         now = time.monotonic()
-        try:
-            retries = self.channel0.retransmit_due(
-                now, self.policy.retry_after, self.policy.max_attempts
-            )
-        except TimeoutError as exc:
-            raise TransportError("RETRY_LIMIT") from exc
-        for packet in retries:
-            self._send(packet.to_f1(), self._peer)  # type: ignore[arg-type]
-        self.drw_retried += len(retries)
+        for channel, target in self._channels.items():
+            if not target.pending_sequences:
+                continue
+            try:
+                retries = target.retransmit_due(
+                    now, self.policy.retry_after, self.policy.max_attempts
+                )
+            except TimeoutError as exc:
+                category = "RETRY_LIMIT" if channel == 0 else "MEDIA_RETRY_LIMIT"
+                raise TransportError(category) from exc
+            for packet in retries:
+                self._send(packet.to_f1(), self._peer)  # type: ignore[arg-type]
+            self.drw_retried += len(retries)
         if now >= self._next_keepalive:
             self._send(alive(ALIVE_PAYLOAD_CAPTURE02), self._peer)  # type: ignore[arg-type]
             self._next_keepalive = now + self.policy.keepalive_interval
@@ -319,17 +365,18 @@ class CleanPpppSession:
             raise TransportError("NO_DRW_ACK")
 
     def read_channel(self, channel: int, max_bytes: int, timeout: float) -> bytes:
-        self._require_channel0(channel)
-        data = self.channel0.read(max_bytes)
+        target = self._read_channel(channel)
+        data = target.read(max_bytes)
         if data:
             return data
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             self._service(min(0.05, max(0.0, deadline - time.monotonic())))
-            data = self.channel0.read(max_bytes)
+            data = target.read(max_bytes)
             if data:
                 return data
-        raise TransportError("CHANNEL0_READ_TIMEOUT")
+        category = "CHANNEL0_READ_TIMEOUT" if channel == 0 else "MEDIA_CHANNEL_TIMEOUT"
+        raise TransportError(category)
 
     def close(self) -> None:
         if self.closed:

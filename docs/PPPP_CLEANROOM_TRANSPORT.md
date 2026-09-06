@@ -1,8 +1,9 @@
 # YI PPPP clean-room transport specification
 
 Status: offline implementation is complete for the observed F1 direct-session
-subset, and CR-2 real-device establishment is now proven on one owned `y291ga`
-/ raw model `83` direct path. CR-3 reliable channel-0/TNP remains unproven live.
+subset. CR-2 establishment and CR-3 reliable channel-0/TNP through valid `4882`
+are live-proven on one owned `y291ga` / raw model `83` direct path. CR-4 media
+channels are OFFLINE IMPLEMENTED / LIVE UNPROVEN.
 
 This specification contains only sanitized transport observations. It does not
 contain a real device identifier, endpoint, InitString, license, key, password,
@@ -52,8 +53,14 @@ TNP payload, media payload, pcap, APK, or proprietary library.
   four opaque bytes; ALIVE_ACK was empty.
 - Cloud `online` is not a transport result. The CR-2 probe records it only as a
   hint and decides connectivity from ready plus keepalive traffic.
+- On the same owned direct path, a controlled CR-3 run carried the existing
+  164-byte TNP startup over reliable channel 0, received a selective D1 ACK,
+  reconstructed ordered response bytes, validated the first expected `4882`,
+  sent `767`, and closed without the proprietary library performing transport
+  or channel I/O.
 
-Sanitized live evidence: [`PPPP_CR2_LIVE_01.md`](PPPP_CR2_LIVE_01.md).
+Sanitized live evidence: [`PPPP_CR2_LIVE_01.md`](PPPP_CR2_LIVE_01.md) and
+[`PPPP_CR3_LIVE_01.md`](PPPP_CR3_LIVE_01.md).
 
 ### INFERRED
 
@@ -81,7 +88,9 @@ Sanitized live evidence: [`PPPP_CR2_LIVE_01.md`](PPPP_CR2_LIVE_01.md).
 - ALIVE four-byte field semantics and whether other models require other values.
 - Relay, wakeup, F2, IPv6, and non-direct paths.
 - Whether CLOSE has an acknowledgement; none was observed.
-- Live CR-3 channel-0/TNP behavior over the clean transport.
+- Clean media-channel parsing on real hardware and sustained media under loss.
+- RTSP/go2rtc/Frigate parity through the clean transport.
+- Production timing, retry, window, chunk, buffer, and timeout limits.
 
 The earlier statement that the transport has “no protocol-level encryption”
 is therefore narrowed to the observed direct-LAN F1 sessions. It is not a
@@ -222,9 +231,35 @@ decoding, storing, or forwarding its payload.
 
 `tools/pppp_cleanroom/probe_channel0_tnp.py` queues the Phase 3E `4881`, `9029`,
 and `768` units as adjacent channel-0 writes, validates the first expected
-`4882` with the Phase 3E validation helper, attempts `767`, and closes. This is
-offline-tested implementation, not live CR-3 proof. RTSP/media and production
-transport selection remain out of scope.
+`4882` with the Phase 3E validation helper, attempts `767`, and closes. The
+controlled run recorded in [`PPPP_CR3_LIVE_01.md`](PPPP_CR3_LIVE_01.md) proved
+that boundary on one owned direct `y291ga` path. RTSP/media publication and
+production transport selection remain out of scope.
+
+## CR-4 media-channel model — OFFLINE IMPLEMENTED / LIVE UNPROVEN
+
+The CR-3 session keeps its original payload-blind behavior unless a research
+caller explicitly enables media reads. `probe_media_tnp.py` does so only after
+validating the CR-3 `4882` boundary. Enabled channels 1, 2, and 3 each use an
+independent `ReliableChannel`, first-packet sequence origin, selective D1 ACK
+state, duplicate suppression, wraparound ordering, and configurable byte bound.
+D2 is still parsed and counted without changing reliable state. Keepalive,
+remote close, retry bounds, and stage-specific failures remain active during
+media reads.
+
+`tnp_stream.py` retains partial TNP headers/bodies across read timeouts and
+returns only complete, version/type-checked, size-bounded channel records. The
+manual runner then calls the existing `yi_live_relay` video decoder/reorder
+buffer and `yi_native_av_relay` AAC decrypt/ADTS parser. It requires a valid
+channel-2 I-frame, channel-3 P-frame, channel-1 AAC record, and positive ordered
+video output before PASS. It holds only bounded transient bytes, prints no
+payload, writes no media, invokes no FFmpeg/RTSP path, and always attempts `767`
+and transport close after startup.
+
+Offline tests prove the implemented channel, stream-reader, synthetic parser,
+cleanup, self-test, support-loader, and nested-relocation mechanics. They do not
+prove camera media timing, real-device parsing, sustained loss behavior, or
+production parity.
 
 ## Running the safe checks
 
@@ -233,7 +268,9 @@ From a repository checkout:
 ```bash
 python3 tools/pppp_cleanroom/probe_legacy_punch.py --self-test
 python3 tools/pppp_cleanroom/probe_channel0_tnp.py --self-test
-python3 -m unittest tests.test_pppp_cleanroom -v
+python3 tools/pppp_cleanroom/probe_media_tnp.py --self-test
+python3 tools/pppp_cleanroom/probe_media_tnp.py --support-smoke-test
+python3 -m unittest tests.test_pppp_cleanroom tests.test_pppp_cr4 -v
 ```
 
 For the offline CR-3 relocation check, keep its four clean-room files together:
@@ -252,6 +289,17 @@ file is overwritten. The probe never prints endpoint values or secret
 connection material. A live run remains manual and is not performed by the
 offline test suite.
 
+For the CR-4 App-container relocation checks, preserve the nested layout so the
+Phase 3E helper can resolve both a checkout and `/opt/yi-home/app`:
+
+```bash
+mkdir -p /tmp/yi-cr4/tools/pppp_cleanroom /tmp/yi-cr4/tools/phase3_pppp_probe
+cp tools/pppp_cleanroom/{probe_media_tnp.py,probe_channel0_tnp.py,probe_legacy_punch.py,tnp_stream.py,yi_pppp.py,yi_pppp_session.py} /tmp/yi-cr4/tools/pppp_cleanroom/
+cp yi_home/rootfs/opt/yi-home/app/tools/phase3_pppp_probe/run_phase3e_tnp.py /tmp/yi-cr4/tools/phase3_pppp_probe/
+python3 /tmp/yi-cr4/tools/pppp_cleanroom/probe_media_tnp.py --self-test
+python3 /tmp/yi-cr4/tools/pppp_cleanroom/probe_media_tnp.py --support-smoke-test
+```
+
 ## Current progress
 
 ### PROVEN
@@ -265,22 +313,31 @@ offline test suite.
 - Session gating after keepalive-confirmed CR-2, partial stream reads, bounded
   retry failure, channel isolation, D2 non-mutation, payload-blind non-zero
   discard, and relocated CR-3 self-test behavior pass sanitized offline tests.
+- Opt-in channels 1/2/3 have independent receive sequencing and ACK state,
+  bounded buffering, duplicate suppression, wraparound ordering, and isolated
+  TNP unit reconstruction across partial/coalesced reads in offline tests.
+- Synthetic records pass the existing H264 decode/reorder and AAC decrypt/ADTS
+  parsers; runner cleanup and relocated self-test/support loading also pass.
 - No code path in the self-test imports cloud support or sends network, TNP, or
   media traffic.
 - One owned `y291ga` / raw model `83` camera completed the full CR-2 live
   transport boundary: server rendezvous, legacy 20-byte punch, matching ready,
   LAN path selection, ALIVE/ALIVE_ACK confirmation, and CLOSE, with no TNP or
   media sent.
+- The same owned path completed CR-3 reliable channel-0/TNP through the first
+  valid `4882`, then `767` and close.
 
 ### INFERRED
 
-- The initial retransmission/window/chunk/keepalive/timeout defaults may be
-  suitable for the first controlled CR-3 device experiment.
-- D1 alone may be sufficient for the first short CR-3 channel-0 experiment.
+- D2 likely represents cumulative/next-expected state, but D1 alone may be
+  sufficient for a short media validation.
+- Retry/window/chunk/buffer/keepalive/timeout defaults and any new media timing
+  assumptions are experimental until measured live.
 
 ### UNKNOWN
 
 - Legacy-punch acceptance on other YI models/firmware and non-direct paths.
 - Loss behavior and long-session D2 requirements on YI hardware.
-- CR-3 TNP exchange, which remains intentionally unattempted.
-- F2, relay, wakeup, IPv6, media parity, and production timing limits.
+- Clean media parsing on real hardware and sustained media under loss.
+- F2, relay, wakeup, IPv6, RTSP/go2rtc/Frigate parity, and production timing
+  limits.

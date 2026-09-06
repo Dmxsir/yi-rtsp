@@ -26,7 +26,22 @@ import sys
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[2]
+def _source_root() -> Path:
+    """Find App helpers from their normal tree or a relocated research copy."""
+    candidates = (
+        *Path(__file__).resolve().parents,
+        *(Path(item) for item in sys.path),
+        Path("/opt/yi-home/app"),
+    )
+    for candidate in candidates:
+        if (candidate / "yi_cloud_probe.py").is_file() and (
+            candidate / "yi_tnp_oracle.py"
+        ).is_file():
+            return candidate
+    raise RuntimeError("YI App source helpers not found")
+
+
+ROOT = _source_root()
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
