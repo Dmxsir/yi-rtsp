@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0-beta.2
+
+- Fixed Ingress-relative `status` and `upload` requests when Home Assistant opens the Web UI without a trailing slash.
+- Added backward-compatible Supervisor hostname resolution for both modern `bashio::app.*` and older `bashio::addon.*` runtimes.
+- Discovery hostname lookup no longer forces the App into a restart loop if Supervisor metadata cannot be resolved immediately.
+
 ## 0.2.0-beta.1
 
 - Added a Home Assistant Ingress setup UI for uploading the user's official YI Home APK.
