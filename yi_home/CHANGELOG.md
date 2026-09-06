@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0-beta.3
+
+- Added HTTP chunked-transfer decoding for APK uploads proxied through Home Assistant `ingress_stream`.
+- Kept streamed uploads bounded to 512 MiB and processed directly into private App storage.
+- Added a chunked-upload integration test that mirrors Supervisor streaming behavior.
+
 ## 0.2.0-beta.2
 
 - Fixed Ingress-relative `status` and `upload` requests when Home Assistant opens the Web UI without a trailing slash.
