@@ -16,7 +16,6 @@ raw packet payload is printed.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import select
 import socket
 import sys
@@ -90,6 +89,13 @@ def parse_server(value: str) -> tuple[str, int]:
     return host, port
 
 
+def parse_camera_id(value: str) -> str:
+    normalized = value.strip().lower()
+    if len(normalized) != 20 or any(ch not in "0123456789abcdef" for ch in normalized):
+        raise argparse.ArgumentTypeError("camera id must be the 20-hex stable_id from yi_camera_manager")
+    return normalized
+
+
 def _app_source_candidates() -> tuple[Path, ...]:
     """Find App sources without assuming a fixed number of path parents."""
     candidates: list[Path] = []
@@ -107,29 +113,46 @@ def _runtime_support() -> tuple[Any, Any]:
     for app_dir in _app_source_candidates():
         if str(app_dir) not in sys.path:
             sys.path.insert(0, str(app_dir))
-        phase3_path = app_dir / "tools" / "phase3_pppp_probe" / "run_phase3e_tnp.py"
-        if not phase3_path.is_file():
+        manager_path = app_dir / "yi_camera_manager.py"
+        if not manager_path.is_file():
             continue
+        import yi_camera_manager as camera_manager
         import yi_tnp_oracle as oracle
 
-        spec = importlib.util.spec_from_file_location("_yi_phase3e_tnp", phase3_path)
-        if spec is None or spec.loader is None:
-            continue
-        phase3 = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(phase3)
-        return oracle, phase3
+        return oracle, camera_manager
     raise RuntimeError(
         "YI App sources not found; run from the repository checkout or inside the App container"
     )
 
 
-def load_material(env_file: Path, timeout: float) -> tuple[Any, dict[str, Any]]:
-    oracle, phase3 = _runtime_support()
+def load_material(env_file: Path, timeout: float, camera_id: str) -> tuple[Any, dict[str, Any]]:
+    """Load one explicit camera by secret-safe stable ID using Phase 6 discovery.
+
+    This intentionally avoids the old Phase 3E hard-coded camera-name gate and
+    does not use cloud online=true as the connectivity decision.
+    """
+    oracle, camera_manager = _runtime_support()
     if env_file.is_file():
         oracle.load_env_file(env_file)
-    # Phase 3E's exact-target preflight records cloud online only as a hint.
-    # The UDP handshake below is the connectivity decision.
-    return phase3._fresh_exact_target(timeout=timeout)
+
+    manager = camera_manager.YiCameraManager(timeout=timeout)
+    try:
+        devices = manager.discover(fetch_tnp=False, refresh=True)
+        selected = next((device for device in devices if device.stable_id == camera_id), None)
+        if selected is None:
+            raise RuntimeError("Requested stable camera ID was not found")
+        if not selected.probe_candidate:
+            raise RuntimeError("Requested camera is not eligible for a TNP transport probe")
+        material = manager.material_for(camera_id)
+        report = {
+            "cloud_online_reported": selected.cloud_online_reported,
+            "normalized_model": selected.normalized_model,
+            "p2p_type": selected.p2p_type,
+            "evidence": "LIVE_CLOUD_STABLE_ID_TARGET",
+        }
+        return material, report
+    finally:
+        manager.close()
 
 
 def self_test() -> int:
@@ -159,6 +182,7 @@ def self_test() -> int:
     assert DrwAck.from_f1(F1Packet.parse(ack.to_f1().encode())) == ack
     assert channel.acknowledge(ack) == 1
     assert DrwPacket.from_f1(F1Packet.parse(frames[0].to_f1().encode())) == frames[0]
+    assert parse_camera_id("0123456789ABCDEFabcd") == "0123456789abcdefabcd"
     print("CR2_SELF_TEST=PASS; cloud_used=false; tnp_sent=false; media_requested=false")
     return 0
 
@@ -174,6 +198,11 @@ def main() -> int:
         type=parse_server,
         help="YI PPPP server IPv4[:port]; repeat for redundancy",
     )
+    parser.add_argument(
+        "--camera-id",
+        type=parse_camera_id,
+        help="20-hex stable_id from yi_camera_manager discover",
+    )
     parser.add_argument("--env-file", type=Path, default=Path("/data/yi.env"))
     parser.add_argument("--cloud-timeout", type=float, default=10.0)
     parser.add_argument("--handshake-timeout", type=float, default=4.0)
@@ -185,6 +214,8 @@ def main() -> int:
         return self_test()
     if not args.servers:
         parser.error("at least one --server is required")
+    if not args.camera_id:
+        parser.error("--camera-id is required for a live probe")
     if args.punch_repeat < 1 or args.punch_repeat > 6:
         raise SystemExit("--punch-repeat must be in range 1..6")
 
@@ -195,11 +226,11 @@ def main() -> int:
     started = time.monotonic()
 
     try:
-        material, cloud_report = load_material(args.env_file, args.cloud_timeout)
+        material, cloud_report = load_material(args.env_file, args.cloud_timeout, args.camera_id)
         device_id = DeviceId.from_text(material.pppp_did)
         cloud_online = bool(cloud_report.get("cloud_online_reported", False))
         print(
-            "cloud_material=ok; did_transport_bytes=20; "
+            "cloud_material=ok; target_selection=stable_id; did_transport_bytes=20; "
             f"cloud_online_reported={str(cloud_online).lower()}; "
             "connectivity_decision=udp_transport; secrets_exposed=false",
             flush=True,
