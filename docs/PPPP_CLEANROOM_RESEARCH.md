@@ -1,0 +1,296 @@
+# PPPP clean-room replacement research
+
+Status: research only. This document does **not** change the production `YI RTSP` runtime.
+
+The production App remains on the proven vendor-library path until an independent transport implementation reaches protocol parity on real YI hardware.
+
+## Goal
+
+Remove the runtime dependency on the user-supplied YI Home APK / `libPPPP_API.so` without changing the already-working Home Assistant, YI cloud, TNP, media, or RTSP layers.
+
+Target architecture:
+
+```text
+YI cloud account/session
+        |
+        | DID + InitString + License/device key + camera password
+        v
+clean-room YI PPPP transport
+        |
+        | ordered/reliable PPPP channels
+        v
+existing YI TNP implementation
+        |
+        v
+existing H264/AAC relay -> go2rtc/RTSP -> Home Assistant / Frigate
+```
+
+## Existing proprietary boundary
+
+The current project already implements the layers above PPPP itself.
+
+`tools/phase3_pppp_probe/run_phase3e_tnp.py` obtains the YI connection material from the cloud and builds the TNP v2 control units. The proven startup sequence is:
+
+```text
+4881 -> 9029 -> 768
+```
+
+with the first `4882` authentication response verified, and `767` used for stop-live.
+
+The cloud path already provides:
+
+- PPPP DID
+- `InitString`
+- YI `License`
+- device-key component derived from the license
+- camera password
+- encryption capability flag
+- wakeup capability flag
+
+The proprietary library is therefore acting primarily as the PPPP transport abstraction: initialize, connect, check, read/write channel data, and close.
+
+This is important: replacing PPPP does **not** require rewriting the account login, TNP authentication, media parsing, AAC/H264 handling, go2rtc publishing, Home Assistant API, or Frigate integration.
+
+## Evidence that YI PPPP is a CS2 fork
+
+Wladimir Palant's PPPP protocol overview identifies a distinct **Yi Technology** PPPP variant and concludes that YI appears to have licensed/forked the original CS2 Network implementation.
+
+Relevant observations from that research:
+
+- CS2 and YI expose very similar public API concepts (`PPPP_Initialize`, `PPPP_ConnectByServer`, etc.).
+- YI retains the CS2 init-string concept and decoder design but uses a different lookup table.
+- YI made substantial wire-level changes; generic CS2/iLnk clients are not drop-in compatible.
+- YI added/changed server, punch, relay and wakeup messages.
+- YI introduced an `F2` extended message header, while legacy message forms are still accepted in some paths.
+- YI's application-level protocol is TNP; PPPP is the transport below it.
+
+Reference:
+
+- https://palant.info/2025/11/05/an-overview-of-the-pppp-protocol-for-iot-cameras/
+
+## Device-side YI TNP source reference
+
+`frankzhangshcn/p2p_tnp` contains a large device-side YI TNP implementation which calls the PPPP API directly.
+
+It confirms the same boundary observed in our project:
+
+- `PPPP_Initialize(...)`
+- `PPPP_Listen(...)`
+- `PPPP_Check(...)`
+- `PPPP_Read(...)`
+- `PPPP_Write(...)`
+- PPPP DRW reliability modes
+- channel 0 for IO control and separate audio/video channels
+
+Repository:
+
+- https://github.com/frankzhangshcn/p2p_tnp
+
+**License/provenance warning:** GitHub currently reports no repository license and there is no LICENSE file in the tree. Treat this code as a protocol/reference artifact only. Do not copy source from it into this project.
+
+## Open / reusable projects
+
+### 1. `elastic/camera-hacks` — MIT
+
+- https://github.com/elastic/camera-hacks
+- https://github.com/elastic/camera-hacks/blob/main/p2p/p2p_client.py
+
+Value:
+
+- standalone Python implementation of a PPPP-like server rendezvous / UDP hole-punch flow
+- shows `HELLO -> P2P request -> PUNCH_TO -> PUNCH_PKT -> ready/alive -> DRW`
+- useful for remote-server state-machine structure
+
+Limitation:
+
+- targets AJCloud, not YI
+- server port, DID encoding, message sizes and opcodes differ from the YI fork
+
+Use: architecture and state-machine reference, not packet constants.
+
+### 2. `devbis/aiopppp` — Apache-2.0
+
+- https://github.com/devbis/aiopppp
+
+Value:
+
+- pure Python asyncio PPPP transport
+- packet framing, UDP session lifecycle, DRW sequencing/ACK handling, keepalive handling
+- useful implementation pattern for a native-library-free transport
+
+Limitation:
+
+- targets iLnk/SHIX-family cameras rather than YI
+- application protocol and handshake are not YI-compatible
+
+Use: reusable design patterns and selected generic helpers where license-compatible; YI wire behavior must be implemented independently.
+
+### 3. `nosoop-onlyslop/p2pcam` — Unlicense
+
+- https://github.com/nosoop-onlyslop/p2pcam
+
+Value:
+
+- pure Go implementation replacing `libPPPP_API.so` for a real Uniden/CS2-family device
+- owner reports live-device verification
+- implements LAN discovery, punch/ready session flow, DRW transport and RTSP without the vendor library
+
+Limitation:
+
+- older CS2/Uniden variant rather than YI
+- primarily direct LAN, not the YI server/wakeup path
+- repository author explicitly notes much of the implementation was AI-generated and only functionally spot-checked
+
+Use: strong proof that the vendor library can be eliminated and a useful transport skeleton/reference.
+
+### 4. `magicus/pppp-dissector` — MIT
+
+- https://github.com/magicus/pppp-dissector
+
+Value:
+
+- documented base PPPP framing and Wireshark dissector
+- useful for validating packet types, lengths, discovery and DRW behavior from captures
+
+Limitation:
+
+- generic/older PPPP documentation; YI diverges substantially
+
+Use: capture tooling and baseline protocol vocabulary.
+
+## Reference-only reverse engineering material
+
+### `xen0bit/libPPCS_API`
+
+- https://github.com/xen0bit/libPPCS_API
+
+Description: decompilation of a CS2 `libPPCS_API` implementation. It exposes a very broad API surface including connect, connect-by-server, check, read/write, force-close, network detect and license helpers.
+
+**No license is declared.** Do not copy implementation code. It may be used only to help identify public API concepts and protocol behavior that must then be independently implemented and validated.
+
+### `frankzhangshcn/p2p_tnp`
+
+As above: valuable YI/TNP reference but no declared license. Do not copy.
+
+## Clean-room rules for this branch
+
+1. No YI APK, YI binary library, decompiled YI source, credentials, DID, password, init string or license value may be committed.
+2. Do not copy code from repositories without a compatible explicit license.
+3. Protocol constants/packet shapes must be backed by public documentation or independently observed traffic.
+4. Real-device tests must use only cameras/accounts owned and authorized by the tester.
+5. Experimental transport stays opt-in and out of production until it matches the vendor transport on the required flows.
+6. The stable `main` branch remains on the proven `0.2.0` vendor-runtime path during research.
+
+## Proposed internal transport contract
+
+The clean implementation should initially present only the semantics the existing YI code actually needs:
+
+```text
+initialize(init_string)
+connect(did, device_key/license metadata, wakeup)
+check(session)
+read(session, channel, max_bytes, timeout)
+write(session, channel, bytes)
+close(session)
+deinitialize()
+```
+
+Implementation details do not need to mimic the vendor library ABI. The adapter only needs to provide equivalent behavior to our Python/native relay boundary.
+
+## Milestones
+
+### CR-0 — fingerprint the exact vendor surface
+
+Record, without committing the library itself:
+
+- SHA-256
+- ELF build ID if present
+- API version from `PPPP_GetAPIVersion`
+- exported `PPPP_*` symbols
+- dynamic calls actually used by our native workers
+
+Deliverable: smallest possible compatibility contract.
+
+### CR-1 — passive YI packet capture / classification
+
+Capture one normal connection made by the current vendor runtime and classify only transport packets:
+
+- server addresses from decoded/observed init-string behavior
+- local UDP port
+- `HELLO`
+- YI server request / response
+- punch messages
+- ready/alive messages
+- DRW + DRW ACK
+- wakeup messages when applicable
+
+Do not log TNP credentials or media payloads.
+
+Deliverable: packet timeline with type/size/direction and endpoint only.
+
+### CR-2 — direct-LAN session probe
+
+Implement a separate research tool that attempts only:
+
+```text
+YI LAN discovery / known-IP session
+-> punch/ready
+-> check-equivalent connected state
+-> close
+```
+
+No TNP commands and no video yet.
+
+Success criterion: session establishment on a real owned YI camera with the proprietary library absent.
+
+### CR-3 — reliable channel 0
+
+Implement DRW sequencing, acknowledgement, retransmission and keepalive sufficiently to exchange the existing TNP control burst on channel 0.
+
+Success criterion:
+
+```text
+4881 -> 9029 -> 768 -> first valid 4882 response
+```
+
+using the existing TNP builder/parser unchanged.
+
+### CR-4 — media channels
+
+Feed channel data from the clean transport into the existing media relay.
+
+Success criterion:
+
+- valid H264 frames
+- valid AAC frames where supported
+- sustained stream equivalent to the vendor path
+
+### CR-5 — YI server rendezvous
+
+Implement YI-specific server connection using cloud-supplied DID + InitString + license/device-key information.
+
+Success criterion: connect when direct LAN discovery is unavailable while preserving the existing cloud/TNP pipeline.
+
+### CR-6 — wakeup / relay fallbacks
+
+Add only the paths actually required by validated camera models.
+
+### CR-7 — optional App backend
+
+Add a development-only selector:
+
+```text
+vendor_pppp | clean_pppp
+```
+
+Run parity tests before any production default changes.
+
+### CR-8 — remove APK dependency
+
+Only after clean PPPP passes repeated real-world parity tests should the App stop requiring the YI APK. Keep the vendor path available for at least one transition release if legally/technically appropriate.
+
+## Immediate next experiment
+
+The highest-value next action is **CR-0 + CR-1**, not rewriting all of PPPP immediately.
+
+We need to determine exactly which vendor API calls the current worker uses and record one successful vendor-backed PPPP connection at the packet level. That will tell us whether the first implementation can be LAN-only and how much of the YI-specific server state machine is truly required.
