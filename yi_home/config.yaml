@@ -1,5 +1,5 @@
 name: "YI RTSP"
-version: "0.1.2"
+version: "0.2.0"
 slug: "yi_home"
 description: "YI camera RTSP support for Home Assistant"
 url: "https://github.com/Dmxsir/yi-rtsp"
@@ -12,6 +12,12 @@ stage: experimental
 apparmor: true
 discovery:
   - yi_home
+ingress: true
+ingress_port: 8098
+ingress_stream: true
+panel_icon: "mdi:cctv"
+panel_title: "YI RTSP"
+panel_admin: true
 map:
   - share:ro
 ports:

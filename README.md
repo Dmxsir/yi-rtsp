@@ -5,24 +5,26 @@ support for YI cameras using the validated native PPPP/TNP runtime.
 
 This repository contains the App build context, startup entrypoint,
 redistributable runtime components, and user documentation. The current App
-supports `amd64` Home Assistant systems only. Phase 1 deliberately preserves
-the internal App slug and discovery identifier `yi_home`, the `/data` layout,
-runtime paths, backend API, and RTSP behavior.
+supports `amd64` Home Assistant systems only and keeps the internal App slug
+and discovery identifier `yi_home` for compatibility.
 
 ## Installation concept
 
-After this repository is published, add
-`https://github.com/Dmxsir/yi-rtsp` to the Home Assistant App store and install
-**YI RTSP**. Before starting it, supply your own official YI Home APK at:
+Add `https://github.com/Dmxsir/yi-rtsp` to the Home Assistant App store and
+install **YI RTSP**.
 
-```text
-/share/yi_rtsp/yi-home.apk
-```
+On first start, if the private vendor runtime is not installed yet, the App
+stays running and exposes a Home Assistant Ingress Web UI. Open **YI RTSP →
+Open Web UI** and upload your own official YI Home APK. The upload is processed
+locally inside the App.
 
-The App's `/share` mount is read-only. At startup the App extracts and validates
-the required ARM64 vendor library, stores it privately at
-`/data/vendor/libPPPP_API.so`, and creates the existing runtime compatibility
-symlinks. The private copy persists under `/data` across restarts.
+The App extracts and validates only the required ARM64 `libPPPP_API.so`, stores
+it privately at `/data/vendor/libPPPP_API.so`, creates the runtime compatibility
+links, and deletes the temporary APK upload. The private library persists under
+`/data` across restarts, so the APK is normally required only once.
+
+The previous `/share/yi_rtsp/yi-home.apk` import path remains supported as a
+backward-compatible fallback.
 
 Neither the official APK nor proprietary YI libraries are distributed by this
 repository, included in its Docker build context or image, or intended for

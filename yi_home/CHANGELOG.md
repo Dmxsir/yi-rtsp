@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.2.0
+
+- Added a Home Assistant Ingress setup UI for first-run upload of the user's official YI Home APK.
+- The App now stays running while vendor runtime setup is incomplete and continues startup automatically after a valid import.
+- Only the validated ARM64 `libPPPP_API.so` is persisted under private `/data`; the uploaded APK is deleted after processing.
+- Added support for Home Assistant `ingress_stream`, including HTTP chunked-transfer uploads for large APK files.
+- Fixed Ingress-relative status/upload endpoints when the Web UI is opened without a trailing slash.
+- Added Supervisor hostname discovery compatible with both modern `bashio::app.*` and older `bashio::addon.*` runtimes.
+- Kept the existing `/share/yi_rtsp/yi-home.apk` and direct-library import paths for backward compatibility.
+- Added integration tests for normal and chunked APK uploads, runtime validation, persistence, and Docker image builds.
+
+## 0.2.0-beta.3
+
+- Added HTTP chunked-transfer decoding for APK uploads proxied through Home Assistant `ingress_stream`.
+- Kept streamed uploads bounded to 512 MiB and processed directly into private App storage.
+- Added a chunked-upload integration test that mirrors Supervisor streaming behavior.
+
+## 0.2.0-beta.2
+
+- Fixed Ingress-relative `status` and `upload` requests when Home Assistant opens the Web UI without a trailing slash.
+- Added backward-compatible Supervisor hostname resolution for both modern `bashio::app.*` and older `bashio::addon.*` runtimes.
+- Discovery hostname lookup no longer forces the App into a restart loop if Supervisor metadata cannot be resolved immediately.
+
+## 0.2.0-beta.1
+
+- Added a Home Assistant Ingress setup UI for uploading the user's official YI Home APK.
+- The App now remains running and waits for first-time APK setup instead of exiting when the private vendor runtime is missing.
+- APK uploads are processed only in private App storage; only the validated ARM64 `libPPPP_API.so` is persisted and the temporary APK is deleted.
+- Existing `/share/yi_rtsp/yi-home.apk` and direct-library import paths remain supported for backward compatibility.
+- The backend and Supervisor discovery continue automatically after a valid APK is imported.
+
 ## 0.1.2
 
 - Fixed Home Assistant Supervisor discovery hostname for the repository-installed App (`7adb5cbc-yi-home`).

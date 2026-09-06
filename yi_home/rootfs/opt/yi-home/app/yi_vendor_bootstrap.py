@@ -142,6 +142,25 @@ def _select_apk_library(archive: zipfile.ZipFile) -> zipfile.ZipInfo:
     return selected
 
 
+def import_vendor_apk(apk: Path, data_dir: Path) -> VendorLibrary:
+    """Import the required ARM64 vendor library from one local APK."""
+    apk = apk.expanduser().resolve()
+    data_dir = data_dir.expanduser().resolve()
+    target = data_dir / "vendor" / LIBRARY_NAME
+    if not apk.is_file() or apk.is_symlink():
+        raise VendorRuntimeError("official YI Home APK is not a regular local file")
+    try:
+        with zipfile.ZipFile(apk) as archive:
+            selected = _select_apk_library(archive)
+            with archive.open(selected) as source:
+                size, digest = persist_vendor_library(source, target)
+    except VendorRuntimeError:
+        raise
+    except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
+        raise VendorRuntimeError("official YI Home APK is not a readable APK/ZIP") from exc
+    return VendorLibrary(target, "official_apk", size, digest, False)
+
+
 def bootstrap_vendor_runtime(data_dir: Path, share_dir: Path) -> VendorLibrary:
     """Reuse a valid private library or import one official local artifact once."""
     data_dir = data_dir.expanduser().resolve()
@@ -160,16 +179,10 @@ def bootstrap_vendor_runtime(data_dir: Path, share_dir: Path) -> VendorLibrary:
     apk = share_dir / APK_NAME
     direct = share_dir / LIBRARY_NAME
     if apk.is_file():
-        try:
-            with zipfile.ZipFile(apk) as archive:
-                selected = _select_apk_library(archive)
-                with archive.open(selected) as source:
-                    size, digest = persist_vendor_library(source, target)
-        except VendorRuntimeError:
-            raise
-        except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
-            raise VendorRuntimeError("official YI Home APK is not a readable APK/ZIP") from exc
-        source_kind = "official_apk"
+        installed = import_vendor_apk(apk, data_dir)
+        size = installed.size
+        digest = installed.sha256
+        source_kind = installed.source
     elif direct.is_file():
         try:
             with direct.open("rb") as source:
@@ -179,8 +192,8 @@ def bootstrap_vendor_runtime(data_dir: Path, share_dir: Path) -> VendorLibrary:
         source_kind = "direct_library"
     else:
         raise VendorRuntimeError(
-            f"place the official YI Home APK at {share_dir / APK_NAME} "
-            f"(or {share_dir / LIBRARY_NAME})"
+            f"upload the official YI Home APK in the App Web UI, or place it at "
+            f"{share_dir / APK_NAME} (or {share_dir / LIBRARY_NAME})"
         )
     return VendorLibrary(target, source_kind, size, digest, False)
 
