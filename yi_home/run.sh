@@ -177,31 +177,51 @@ if [[ "${ready}" != true ]]; then
   bashio::exit.nok "YI Home backend health API did not become ready."
 fi
 
-# Ask Supervisor for this exact installed App hostname. This keeps discovery
-# correct for the public repository, local development, and branch test repos.
-APP_HOSTNAME="$(bashio::app.hostname 2>/dev/null || true)"
-if [[ -z "${APP_HOSTNAME}" ]]; then
-  APP_SLUG="$(bashio::app.slug 2>/dev/null || true)"
-  APP_HOSTNAME="${APP_SLUG//_/-}"
-fi
-if [[ -z "${APP_HOSTNAME}" ]]; then
-  terminate_all
-  bashio::exit.nok "Could not resolve this App's Supervisor hostname for discovery."
-fi
+resolve_app_hostname() {
+  local value=""
 
-bashio::log.info "Publishing YI Home discovery endpoint host=${APP_HOSTNAME} port=${API_PORT}; credentials_exposed=false."
-ha_config="$(
-  bashio::var.json \
-    host "${APP_HOSTNAME}" \
-    port "^${API_PORT}" \
-    api_version "v1" \
-    api_token "${API_TOKEN}" \
-    rtsp_port "^${RTSP_PORT}"
-)"
-if bashio::discovery "yi_home" "${ha_config}" >/dev/null; then
-  bashio::log.info "Published YI Home discovery information to Home Assistant."
+  # /addons/self/* is available to an App without broad Supervisor API access.
+  # Prefer the API response directly so this works across Bashio generations.
+  if [[ -n "${SUPERVISOR_TOKEN:-}" ]]; then
+    value="$(
+      curl -fsS --max-time 5 \
+        -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+        http://supervisor/addons/self/info 2>/dev/null \
+      | python3 -c 'import json,sys; payload=json.load(sys.stdin); print(((payload.get("data") or {}).get("hostname")) or "")' \
+        2>/dev/null || true
+    )"
+  fi
+
+  # Home Assistant renamed add-on terminology to App. Older base images can
+  # still ship Bashio with bashio::addon.* while newer releases use app.*.
+  if [[ -z "${value}" ]] && declare -F bashio::app.hostname >/dev/null 2>&1; then
+    value="$(bashio::app.hostname 2>/dev/null || true)"
+  fi
+  if [[ -z "${value}" ]] && declare -F bashio::addon.hostname >/dev/null 2>&1; then
+    value="$(bashio::addon.hostname 2>/dev/null || true)"
+  fi
+
+  printf '%s' "${value}"
+}
+
+APP_HOSTNAME="$(resolve_app_hostname)"
+if [[ -n "${APP_HOSTNAME}" ]]; then
+  bashio::log.info "Publishing YI Home discovery endpoint host=${APP_HOSTNAME} port=${API_PORT}; credentials_exposed=false."
+  ha_config="$(
+    bashio::var.json \
+      host "${APP_HOSTNAME}" \
+      port "^${API_PORT}" \
+      api_version "v1" \
+      api_token "${API_TOKEN}" \
+      rtsp_port "^${RTSP_PORT}"
+  )"
+  if bashio::discovery "yi_home" "${ha_config}" >/dev/null; then
+    bashio::log.info "Published YI Home discovery information to Home Assistant."
+  else
+    bashio::log.warning "Could not publish YI Home discovery information yet; the backend remains available."
+  fi
 else
-  bashio::log.warning "Could not publish YI Home discovery information yet; the backend remains available."
+  bashio::log.warning "Could not resolve this App's Supervisor hostname yet; discovery skipped without stopping the backend."
 fi
 
 bashio::log.info "YI Home backend is ready."
