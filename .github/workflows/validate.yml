@@ -1,0 +1,25 @@
+name: Validate App
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Compile Python sources
+        run: python3 -m py_compile yi_home/rootfs/opt/yi-home/app/*.py
+
+      - name: Validate startup script syntax
+        run: bash -n yi_home/run.sh
+
+      - name: Build App image
+        run: docker build --build-arg BUILD_VERSION=0.2.0-beta.1 yi_home
