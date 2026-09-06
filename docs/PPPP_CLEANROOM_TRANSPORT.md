@@ -211,10 +211,20 @@ evidence as well. The 2026-09-06 `y291ga` live run satisfied both conditions.
 6. Variable D1 lists, including duplicate sequence entries, round-trip exactly.
 7. D2 packets round-trip but do not alter reliability state.
 
-This remains offline CR-3 codec/state logic, not a live CR-3 session. CR-2 has
-now passed on owned hardware, so a separate controlled research probe may wire
-only channel 0 to the existing TNP builders for the next gate. RTSP/media and
-production transport selection remain out of scope.
+`tools/pppp_cleanroom/yi_pppp_session.py` provides the research-only session
+boundary used by CR-3. It enters DRW mode only after the existing CR-2 state
+has selected a peer and received keepalive confirmation. During channel-0 ACK
+and read waits it continues explicit keepalives, applies only selective D1 ACKs
+to pending send state, retransmits with a bounded configurable policy, and
+turns remote close/retry/read failures into stage-specific categories. D2 is
+counted but never applied. Non-zero DRW is ACKed and discarded without logging,
+decoding, storing, or forwarding its payload.
+
+`tools/pppp_cleanroom/probe_channel0_tnp.py` queues the Phase 3E `4881`, `9029`,
+and `768` units as adjacent channel-0 writes, validates the first expected
+`4882` with the Phase 3E validation helper, attempts `767`, and closes. This is
+offline-tested implementation, not live CR-3 proof. RTSP/media and production
+transport selection remain out of scope.
 
 ## Running the safe checks
 
@@ -222,20 +232,23 @@ From a repository checkout:
 
 ```bash
 python3 tools/pppp_cleanroom/probe_legacy_punch.py --self-test
+python3 tools/pppp_cleanroom/probe_channel0_tnp.py --self-test
 python3 -m unittest tests.test_pppp_cleanroom -v
 ```
 
-For relocation inside the Home Assistant App container, copy both clean-room
-files so the codec remains beside the probe:
+For the offline CR-3 relocation check, keep its four clean-room files together:
 
 ```bash
-cp tools/pppp_cleanroom/probe_legacy_punch.py tools/pppp_cleanroom/yi_pppp.py /tmp/
-python3 /tmp/probe_legacy_punch.py --self-test
+cp tools/pppp_cleanroom/{probe_channel0_tnp.py,probe_legacy_punch.py,yi_pppp.py,yi_pppp_session.py} /tmp/
+python3 /tmp/probe_channel0_tnp.py --self-test
 ```
 
-The live transport-only command additionally requires a selected camera stable
-ID, one or more explicitly supplied YI server IPv4 addresses, and the existing
-protected App environment file. It never prints endpoint values or secret
+The live CR-3 command additionally requires the matching Phase 3E helper from
+this branch copied beside them as `/tmp/run_phase3e_tnp.py`, a selected camera
+stable ID, one or more explicitly supplied YI server IPv4 addresses, and the
+existing protected App environment file. The helper continues to obtain its
+normal Python dependencies from `/opt/yi-home/app`; no installed production
+file is overwritten. The probe never prints endpoint values or secret
 connection material. A live run remains manual and is not performed by the
 offline test suite.
 
@@ -249,6 +262,9 @@ offline test suite.
 - The probe runs from checkout and from a relocated temporary directory.
 - Selective ACK, retransmission, coalescing, ordering, duplicate suppression,
   and 16-bit wraparound pass sanitized offline tests.
+- Session gating after keepalive-confirmed CR-2, partial stream reads, bounded
+  retry failure, channel isolation, D2 non-mutation, payload-blind non-zero
+  discard, and relocated CR-3 self-test behavior pass sanitized offline tests.
 - No code path in the self-test imports cloud support or sends network, TNP, or
   media traffic.
 - One owned `y291ga` / raw model `83` camera completed the full CR-2 live
@@ -258,12 +274,13 @@ offline test suite.
 
 ### INFERRED
 
-- The initial retry/window/chunk defaults are suitable for the first controlled
-  CR-3 device experiment.
+- The initial retransmission/window/chunk/keepalive/timeout defaults may be
+  suitable for the first controlled CR-3 device experiment.
 - D1 alone may be sufficient for the first short CR-3 channel-0 experiment.
 
 ### UNKNOWN
 
 - Legacy-punch acceptance on other YI models/firmware and non-direct paths.
-- Loss behavior and D2 requirements on YI hardware.
+- Loss behavior and long-session D2 requirements on YI hardware.
 - CR-3 TNP exchange, which remains intentionally unattempted.
+- F2, relay, wakeup, IPv6, media parity, and production timing limits.

@@ -226,6 +226,18 @@ def _build_units(material: oracle.CameraMaterial) -> tuple[bytes, bytes, bytes, 
     )
 
 
+def validate_first_4882(header: bytes, body: bytes) -> bool:
+    """Apply the same bounded Phase 3E checks as the native live probe."""
+    if len(header) != 8 or header[0] != TNP_VERSION or header[1] != 3:
+        return False
+    declared_size = struct.unpack(">I", header[4:8])[0]
+    if declared_size != len(body) or not 40 <= declared_size <= 4096 - len(header):
+        return False
+    command, number = struct.unpack(">HH", body[:4])
+    auth_result = struct.unpack(">I", body[8:12])[0]
+    return command == 4882 and number == 1 and auth_result == 0
+
+
 def _payload(material: oracle.CameraMaterial, units: tuple[bytes, bytes, bytes, bytes]) -> bytes:
     did = _field(material.pppp_did)
     server = _field(material.server)

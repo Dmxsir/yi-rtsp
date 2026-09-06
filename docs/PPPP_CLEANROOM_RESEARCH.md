@@ -290,11 +290,13 @@ Sanitized report: [`PPPP_CR2_LIVE_01.md`](PPPP_CR2_LIVE_01.md).
 
 What is proven is intentionally narrow: a direct F1 session on this owned `y291ga` path accepts the legacy punch form. Other models, relay/F2/wakeup paths, and broader compatibility remain unproven.
 
-### CR-3 — reliable channel 0 — OFFLINE CODEC/STATE IMPLEMENTED, LIVE NEXT
+### CR-3 — reliable channel 0 — OFFLINE RUNNER IMPLEMENTED, LIVE UNPROVEN
 
 `tools/pppp_cleanroom/yi_pppp.py` implements tested D0 framing, variable D1 ACKs, D2 parsing, sequencing, selective acknowledgement, retransmission, receive ordering, duplicate suppression, wraparound and channel byte-stream reads.
 
-Because CR-2 has now succeeded on real hardware, the next controlled experiment may connect this offline-tested reliability layer to the existing TNP builder/parser for channel 0 only. This is still a research gate and must not enable production media or change the default transport.
+`tools/pppp_cleanroom/yi_pppp_session.py` now connects that reliability layer to the unchanged CR-2 rendezvous/punch/ready/keepalive state machine. `tools/pppp_cleanroom/probe_channel0_tnp.py` is a separate manual runner that lazy-loads the Phase 3E TNP builders and validator, selects exactly one camera by stable ID through `yi_camera_manager`, ACKs and discards non-zero-channel DRW without inspecting its payload, and stops after the first valid expected response. Its self-test imports no cloud/runtime support and performs no network, TNP, or media I/O.
+
+Offline tests prove the runner/session mechanics only. D2 remains observational and does not change reliable send state. The retransmission, window, chunk, keepalive, and timeout defaults are explicit experimental values pending live measurement. This remains a research gate and does not enable production media or change the default transport.
 
 Success criterion:
 
@@ -302,7 +304,7 @@ Success criterion:
 4881 -> 9029 -> 768 -> first valid 4882 response -> 767 -> close
 ```
 
-using the existing TNP builder/parser unchanged.
+using the existing Phase 3E TNP construction and validation rules.
 
 ### CR-4 — media channels
 
@@ -342,4 +344,4 @@ Only after clean PPPP passes repeated real-world parity tests should the App sto
 
 The evidence audit, packet contract, state machine, implementation limits and PROVEN / INFERRED / UNKNOWN ledger are in [`PPPP_CLEANROOM_TRANSPORT.md`](PPPP_CLEANROOM_TRANSPORT.md).
 
-CR-2 is now live-proven for one owned `y291ga` direct F1 path. The next experiment is CR-3: establish the same clean session, enable only reliable DRW channel 0, send the existing TNP startup burst `4881 -> 9029 -> 768`, verify the first valid `4882` response, send stop-live `767`, and close. No RTSP/media path or production default may be enabled by that experiment.
+CR-2 is live-proven for one owned `y291ga` direct F1 path. The CR-3 implementation and sanitized offline tests are complete, but CR-3 remains live-unknown until the user manually runs the explicit probe: establish the same clean session, enable only reliable DRW channel 0, send `4881 -> 9029 -> 768`, verify the first valid `4882` response, attempt stop-live `767`, and close. Other models, F2, relay, wakeup, IPv6, long-session D2 behavior, media parity, and production timing limits also remain unknown. No RTSP/media path or production default is enabled by this work.
