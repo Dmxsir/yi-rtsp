@@ -18,6 +18,9 @@ jobs:
       - name: Compile Python sources
         run: python3 -m py_compile yi_home/rootfs/opt/yi-home/app/*.py
 
+      - name: Test APK upload and vendor import
+        run: python3 -m unittest discover -s tests -v
+
       - name: Validate startup script syntax
         run: bash -n yi_home/run.sh
 
