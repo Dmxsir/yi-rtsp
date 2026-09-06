@@ -177,10 +177,22 @@ if [[ "${ready}" != true ]]; then
   bashio::exit.nok "YI Home backend health API did not become ready."
 fi
 
-bashio::log.info "Publishing YI Home discovery endpoint host=7adb5cbc-yi-home port=${API_PORT}; credentials_exposed=false."
+# Ask Supervisor for this exact installed App hostname. This keeps discovery
+# correct for the public repository, local development, and branch test repos.
+APP_HOSTNAME="$(bashio::app.hostname 2>/dev/null || true)"
+if [[ -z "${APP_HOSTNAME}" ]]; then
+  APP_SLUG="$(bashio::app.slug 2>/dev/null || true)"
+  APP_HOSTNAME="${APP_SLUG//_/-}"
+fi
+if [[ -z "${APP_HOSTNAME}" ]]; then
+  terminate_all
+  bashio::exit.nok "Could not resolve this App's Supervisor hostname for discovery."
+fi
+
+bashio::log.info "Publishing YI Home discovery endpoint host=${APP_HOSTNAME} port=${API_PORT}; credentials_exposed=false."
 ha_config="$(
   bashio::var.json \
-    host "7adb5cbc-yi-home" \
+    host "${APP_HOSTNAME}" \
     port "^${API_PORT}" \
     api_version "v1" \
     api_token "${API_TOKEN}" \
