@@ -270,29 +270,36 @@ Do not log TNP credentials or media payloads.
 
 Deliverable: packet timeline with type/size/direction and endpoint only.
 
-### CR-2 — direct-LAN session probe — OFFLINE IMPLEMENTED, LIVE UNKNOWN
+### CR-2 — direct-LAN session probe — LIVE PROVEN FOR ONE `y291ga` PATH
 
-`tools/pppp_cleanroom/probe_legacy_punch.py` now attempts only:
+`tools/pppp_cleanroom/probe_legacy_punch.py` performs only:
 
 ```text
 YI server rendezvous
--> legacy punch to server-supplied candidates
--> ready plus keepalive-confirmed connected state
+-> legacy 20-byte punch to server-supplied candidates
+-> matching ready
+-> selected-peer keepalive confirmation
 -> close
 ```
 
-No TNP commands and no video yet.
+A controlled live run on 2026-09-06 succeeded on one owned `y291ga` / raw model `83` camera without `libPPPP_API.so` performing the transport handshake. The probe received three HELLO acknowledgements and three P2P request acknowledgements, received one LAN and one WAN candidate, established `P2P_RDY` through the legacy 20-byte `PUNCH_PKT`, selected the LAN candidate, observed both `ALIVE` and `ALIVE_ACK`, reported `transport_result=PASS`, and sent `CLOSE`.
 
-Success criterion: session establishment on a real owned YI camera with the proprietary library absent.
+No DRW, TNP command, audio, video, RTSP, or production transport change was part of that experiment.
 
-### CR-3 — reliable channel 0 — OFFLINE CODEC/STATE IMPLEMENTED, LIVE GATED
+Sanitized report: [`PPPP_CR2_LIVE_01.md`](PPPP_CR2_LIVE_01.md).
 
-`tools/pppp_cleanroom/yi_pppp.py` implements tested D0 framing, variable D1 ACKs, D2 parsing, sequencing, selective acknowledgement, retransmission, receive ordering, duplicate suppression, wraparound and channel byte-stream reads. It is not connected to TNP or media while CR-2 live establishment remains unproven.
+What is proven is intentionally narrow: a direct F1 session on this owned `y291ga` path accepts the legacy punch form. Other models, relay/F2/wakeup paths, and broader compatibility remain unproven.
+
+### CR-3 — reliable channel 0 — OFFLINE CODEC/STATE IMPLEMENTED, LIVE NEXT
+
+`tools/pppp_cleanroom/yi_pppp.py` implements tested D0 framing, variable D1 ACKs, D2 parsing, sequencing, selective acknowledgement, retransmission, receive ordering, duplicate suppression, wraparound and channel byte-stream reads.
+
+Because CR-2 has now succeeded on real hardware, the next controlled experiment may connect this offline-tested reliability layer to the existing TNP builder/parser for channel 0 only. This is still a research gate and must not enable production media or change the default transport.
 
 Success criterion:
 
 ```text
-4881 -> 9029 -> 768 -> first valid 4882 response
+4881 -> 9029 -> 768 -> first valid 4882 response -> 767 -> close
 ```
 
 using the existing TNP builder/parser unchanged.
@@ -335,4 +342,4 @@ Only after clean PPPP passes repeated real-world parity tests should the App sto
 
 The evidence audit, packet contract, state machine, implementation limits and PROVEN / INFERRED / UNKNOWN ledger are in [`PPPP_CLEANROOM_TRANSPORT.md`](PPPP_CLEANROOM_TRANSPORT.md).
 
-The next experiment is a manual CR-2 run on an owned camera using the transport-only probe. A pass requires a matching `P2P_RDY` from a server-supplied punched candidate plus selected-peer ALIVE/ALIVE_ACK evidence. The probe then sends CLOSE and exits without DRW, TNP or media. Only after that result may a separate CR-3 experiment connect the tested reliable channel to the existing TNP builders.
+CR-2 is now live-proven for one owned `y291ga` direct F1 path. The next experiment is CR-3: establish the same clean session, enable only reliable DRW channel 0, send the existing TNP startup burst `4881 -> 9029 -> 768`, verify the first valid `4882` response, send stop-live `767`, and close. No RTSP/media path or production default may be enabled by that experiment.
