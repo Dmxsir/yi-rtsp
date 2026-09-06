@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import struct
@@ -53,8 +54,8 @@ class VendorUploadTest(unittest.TestCase):
         )
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
-        host, port = self.server.server_address
-        self.base_url = f"http://{host}:{port}/"
+        self.host, self.port = self.server.server_address
+        self.base_url = f"http://{self.host}:{self.port}/"
 
     def tearDown(self) -> None:
         self.server.shutdown()
@@ -65,6 +66,22 @@ class VendorUploadTest(unittest.TestCase):
     def get_json(self, path: str) -> dict[str, object]:
         with urllib.request.urlopen(self.base_url + path, timeout=5) as response:
             return json.loads(response.read().decode("utf-8"))
+
+    def assert_runtime_installed(self) -> None:
+        target = self.data_dir / "vendor" / LIBRARY_NAME
+        self.assertTrue(target.is_file())
+        self.assertEqual(target.stat().st_size, 4096)
+
+        upload_dir = self.data_dir / "vendor-upload"
+        self.assertEqual(list(upload_dir.iterdir()), [])
+        for guest_dir in COMPATIBILITY_GUEST_DIRS:
+            link = self.runtime_root / guest_dir / LIBRARY_NAME
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(link.resolve(), target.resolve())
+
+        status = self.get_json("status")
+        self.assertTrue(status["installed"])
+        self.assertEqual(status["size"], 4096)
 
     def test_upload_imports_vendor_and_deletes_apk(self) -> None:
         self.assertEqual(self.get_json("status"), {"installed": False})
@@ -80,20 +97,31 @@ class VendorUploadTest(unittest.TestCase):
 
         self.assertTrue(payload["ok"])
         self.assertTrue(payload["installed"])
-        target = self.data_dir / "vendor" / LIBRARY_NAME
-        self.assertTrue(target.is_file())
-        self.assertEqual(target.stat().st_size, 4096)
+        self.assert_runtime_installed()
 
-        upload_dir = self.data_dir / "vendor-upload"
-        self.assertEqual(list(upload_dir.iterdir()), [])
-        for guest_dir in COMPATIBILITY_GUEST_DIRS:
-            link = self.runtime_root / guest_dir / LIBRARY_NAME
-            self.assertTrue(link.is_symlink())
-            self.assertEqual(link.resolve(), target.resolve())
+    def test_chunked_upload_matches_streaming_ingress(self) -> None:
+        self.assertEqual(self.get_json("status"), {"installed": False})
+        apk = fake_apk()
+        parts = [apk[:17], apk[17:61], apk[61:]]
 
-        status = self.get_json("status")
-        self.assertTrue(status["installed"])
-        self.assertEqual(status["size"], 4096)
+        connection = http.client.HTTPConnection(self.host, self.port, timeout=5)
+        try:
+            connection.request(
+                "POST",
+                "/upload",
+                body=iter(parts),
+                headers={"Content-Type": "application/vnd.android.package-archive"},
+                encode_chunked=True,
+            )
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+        finally:
+            connection.close()
+
+        self.assertEqual(response.status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["installed"])
+        self.assert_runtime_installed()
 
 
 if __name__ == "__main__":
