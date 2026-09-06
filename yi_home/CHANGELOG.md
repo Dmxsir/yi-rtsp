@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0
+
+- Added a Home Assistant Ingress setup UI for first-run upload of the user's official YI Home APK.
+- The App now stays running while vendor runtime setup is incomplete and continues startup automatically after a valid import.
+- Only the validated ARM64 `libPPPP_API.so` is persisted under private `/data`; the uploaded APK is deleted after processing.
+- Added support for Home Assistant `ingress_stream`, including HTTP chunked-transfer uploads for large APK files.
+- Fixed Ingress-relative status/upload endpoints when the Web UI is opened without a trailing slash.
+- Added Supervisor hostname discovery compatible with both modern `bashio::app.*` and older `bashio::addon.*` runtimes.
+- Kept the existing `/share/yi_rtsp/yi-home.apk` and direct-library import paths for backward compatibility.
+- Added integration tests for normal and chunked APK uploads, runtime validation, persistence, and Docker image builds.
+
 ## 0.2.0-beta.3
 
 - Added HTTP chunked-transfer decoding for APK uploads proxied through Home Assistant `ingress_stream`.
