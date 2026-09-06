@@ -32,7 +32,7 @@ Observed PPPP totals:
 | `0xA0` | `CONNECT_REPORT` | 15 | 0 | 15 |
 | `0xD0` | `DRW` | 17 | 17,354 | 17,371 |
 | `0xD1` | `DRW_ACK` | 5,352 | 7 | 5,359 |
-| `0xD2` | YI DRW cumulative/recovery ACK | 7 | 3 | 10 |
+| `0xD2` | YI DRW ACK extension | 7 | 3 | 10 |
 | `0xE0` | `ALIVE` | 329 | 478 | 807 |
 | `0xE1` | `ALIVE_ACK` | 460 | 330 | 790 |
 | `0xF0` | `CLOSE` | 0 | 4 | 4 |
@@ -155,7 +155,7 @@ Immediately afterward the App sent YI `ALIVE` packets with a four-byte payload. 
 
 The first channel-0 DRW packet followed roughly 4–6 ms after the initial ALIVE burst on four sessions and about 1 ms after it on the fifth.
 
-No `P2P_RDY_ACK (0x43)` was observed or required by the vendor client in this capture.
+No `P2P_RDY_ACK (0x43)` was emitted by the vendor client in these five sessions. This does not prove that other YI models or transport paths never require it.
 
 ## DRW stream semantics — important new finding
 

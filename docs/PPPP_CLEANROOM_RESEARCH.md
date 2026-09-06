@@ -175,7 +175,7 @@ Limitation:
 - primarily direct LAN, not the YI server/wakeup path
 - repository author explicitly notes much of the implementation was AI-generated and only functionally spot-checked
 
-Use: strong proof that the vendor library can be eliminated and a useful transport skeleton/reference.
+Use: feasibility evidence only. Although the output repository is Unlicense, its own source comments describe proprietary decompilation as an implementation source. Do not copy or derive this project's code into the YI clean-room implementation.
 
 ### 4. `magicus/pppp-dissector` — MIT
 
@@ -253,7 +253,7 @@ Remaining:
 
 Deliverable: smallest possible compatibility contract.
 
-### CR-1 — passive YI packet capture / classification
+### CR-1 — passive YI packet capture / classification — COMPLETE FOR DIRECT F1
 
 Capture one normal connection made by the current vendor runtime and classify only transport packets:
 
@@ -270,14 +270,14 @@ Do not log TNP credentials or media payloads.
 
 Deliverable: packet timeline with type/size/direction and endpoint only.
 
-### CR-2 — direct-LAN session probe
+### CR-2 — direct-LAN session probe — OFFLINE IMPLEMENTED, LIVE UNKNOWN
 
-Implement a separate research tool that attempts only:
+`tools/pppp_cleanroom/probe_legacy_punch.py` now attempts only:
 
 ```text
-YI LAN discovery / known-IP session
--> punch/ready
--> check-equivalent connected state
+YI server rendezvous
+-> legacy punch to server-supplied candidates
+-> ready plus keepalive-confirmed connected state
 -> close
 ```
 
@@ -285,9 +285,9 @@ No TNP commands and no video yet.
 
 Success criterion: session establishment on a real owned YI camera with the proprietary library absent.
 
-### CR-3 — reliable channel 0
+### CR-3 — reliable channel 0 — OFFLINE CODEC/STATE IMPLEMENTED, LIVE GATED
 
-Implement DRW sequencing, acknowledgement, retransmission and keepalive sufficiently to exchange the existing TNP control burst on channel 0.
+`tools/pppp_cleanroom/yi_pppp.py` implements tested D0 framing, variable D1 ACKs, D2 parsing, sequencing, selective acknowledgement, retransmission, receive ordering, duplicate suppression, wraparound and channel byte-stream reads. It is not connected to TNP or media while CR-2 live establishment remains unproven.
 
 Success criterion:
 
@@ -331,8 +331,8 @@ Run parity tests before any production default changes.
 
 Only after clean PPPP passes repeated real-world parity tests should the App stop requiring the YI APK. Keep the vendor path available for at least one transition release if legally/technically appropriate.
 
-## Immediate next experiment
+## Current specification and immediate next experiment
 
-The highest-value next action is **CR-1**, while completing the last CR-0 fingerprint items in parallel.
+The evidence audit, packet contract, state machine, implementation limits and PROVEN / INFERRED / UNKNOWN ledger are in [`PPPP_CLEANROOM_TRANSPORT.md`](PPPP_CLEANROOM_TRANSPORT.md).
 
-Record one successful vendor-backed PPPP connection at packet level, then build a transport-only timeline. That will tell us whether the first implementation can be LAN-only and exactly how much of the YI-specific server state machine is required.
+The next experiment is a manual CR-2 run on an owned camera using the transport-only probe. A pass requires a matching `P2P_RDY` from a server-supplied punched candidate plus selected-peer ALIVE/ALIVE_ACK evidence. The probe then sends CLOSE and exits without DRW, TNP or media. Only after that result may a separate CR-3 experiment connect the tested reliable channel to the existing TNP builders.

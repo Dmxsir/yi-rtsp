@@ -118,7 +118,7 @@ This confirms that a clean transport needs an independent keepalive/ack loop and
 
 ## What capture 01 proves
 
-1. The steady-state YI transport is plain, parseable F1 PPPP framing; there is no protocol-level encryption in the captured DRW/ALIVE traffic.
+1. The five observed direct-LAN sessions use plain, parseable F1 framing for the captured DRW/ALIVE traffic. This does not establish behavior for F2, relay, wakeup, other models or every YI protocol generation.
 2. Generic PPPP DRW concepts are reusable: channel, 16-bit sequence ID, variable ACK lists and ALIVE/ALIVE_ACK.
 3. YI-specific extensions matter: `0x18/0x19`, four-byte ALIVE variants and `0xD2` are present on real hardware.
 4. Channels 1/2/3 have distinct reliability/batching behavior consistent with audio, realtime I-frame and realtime P-frame traffic.
