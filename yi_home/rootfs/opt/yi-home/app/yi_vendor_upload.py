@@ -10,6 +10,7 @@ import tempfile
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import BinaryIO
 from urllib.parse import urlsplit
 
 from yi_vendor_bootstrap import (
@@ -21,6 +22,7 @@ from yi_vendor_bootstrap import (
 )
 
 MAX_APK_SIZE = 512 * 1024 * 1024
+MAX_CHUNK_LINE = 8192
 ALLOWED_CLIENTS = {"127.0.0.1", "::1", "172.30.32.2"}
 
 _PAGE = r"""<!doctype html>
@@ -58,11 +60,15 @@ const ingressBase=window.location.pathname.endsWith("/")?window.location.pathnam
 const endpoint=name=>ingressBase+name;
 fileEl.addEventListener("change",()=>{button.disabled=!fileEl.files.length;});
 async function refresh(){try{const r=await fetch(endpoint("status"),{cache:"no-store"});if(!r.ok)throw new Error(`HTTP ${r.status}`);const s=await r.json();if(s.installed){statusEl.className="status ok";statusEl.textContent=`Vendor runtime installed (${Math.round(s.size/1024)} KiB).`;}else{statusEl.className="status warn";statusEl.textContent="Vendor runtime not installed. Upload the official YI Home APK.";}}catch(e){statusEl.className="status warn";statusEl.textContent="Could not read runtime status.";}}
-button.addEventListener("click",async()=>{const file=fileEl.files[0];if(!file)return;if(!file.name.toLowerCase().endsWith(".apk")){progress.textContent="Please select an APK file.";return;}button.disabled=true;progress.textContent="Uploading and validating…";try{const r=await fetch(endpoint("upload"),{method:"POST",headers:{"Content-Type":"application/vnd.android.package-archive"},body:file}),data=await r.json();if(!r.ok||!data.ok)throw new Error(data.error||`HTTP ${r.status}`);progress.textContent="Runtime installed. The App will continue startup automatically.";fileEl.value="";await refresh();}catch(e){progress.textContent=`Upload failed: ${e.message}`;}finally{button.disabled=!fileEl.files.length;}});
+button.addEventListener("click",async()=>{const file=fileEl.files[0];if(!file)return;if(!file.name.toLowerCase().endsWith(".apk")){progress.textContent="Please select an APK file.";return;}button.disabled=true;progress.textContent="Uploading and validating…";try{const r=await fetch(endpoint("upload"),{method:"POST",headers:{"Content-Type":"application/vnd.android.package-archive"},body:file}),data=await r.json();if(!r.ok||!data.ok)throw new Error(data.error||`HTTP ${r.status}`);progress.textContent="Runtime installed successfully.";fileEl.value="";await refresh();}catch(e){progress.textContent=`Upload failed: ${e.message}`;}finally{button.disabled=!fileEl.files.length;}});
 refresh();setInterval(refresh,5000);
 </script>
 </body></html>
 """
+
+
+class UploadTooLargeError(VendorRuntimeError):
+    """The streamed APK exceeded the configured upload limit."""
 
 
 class UploadServer(ThreadingHTTPServer):
@@ -113,6 +119,75 @@ class Handler(BaseHTTPRequestHandler):
             return {"installed": False}
         return {"installed": True, "size": size, "sha256": digest}
 
+    def _copy_exact(self, output: BinaryIO, size: int, total: int) -> int:
+        """Copy exactly one known-size request/chunk payload into private storage."""
+        if size < 0 or total + size > MAX_APK_SIZE:
+            raise UploadTooLargeError("APK is too large.")
+        remaining = size
+        while remaining:
+            chunk = self.rfile.read(min(1024 * 1024, remaining))
+            if not chunk:
+                raise VendorRuntimeError("APK upload ended before all bytes were received")
+            output.write(chunk)
+            total += len(chunk)
+            remaining -= len(chunk)
+        return total
+
+    def _copy_chunked(self, output: BinaryIO) -> int:
+        """Decode an HTTP/1.1 chunked request body produced by streaming Ingress."""
+        total = 0
+        while True:
+            line = self.rfile.readline(MAX_CHUNK_LINE + 1)
+            if not line or len(line) > MAX_CHUNK_LINE:
+                raise VendorRuntimeError("APK upload has an invalid chunk header")
+            token = line.strip().split(b";", 1)[0]
+            try:
+                size = int(token, 16)
+            except ValueError as exc:
+                raise VendorRuntimeError("APK upload has an invalid chunk size") from exc
+            if size < 0:
+                raise VendorRuntimeError("APK upload has an invalid chunk size")
+            if size == 0:
+                # Consume optional trailers through the terminating empty line.
+                while True:
+                    trailer = self.rfile.readline(MAX_CHUNK_LINE + 1)
+                    if not trailer or len(trailer) > MAX_CHUNK_LINE:
+                        raise VendorRuntimeError("APK upload has invalid chunk trailers")
+                    if trailer in (b"\r\n", b"\n"):
+                        return total
+            total = self._copy_exact(output, size, total)
+            ending = self.rfile.read(2)
+            if ending != b"\r\n":
+                raise VendorRuntimeError("APK upload has invalid chunk framing")
+
+    def _copy_request_body(self, output: BinaryIO) -> int:
+        """Accept ordinary Content-Length or Supervisor streaming/chunked uploads."""
+        transfer_tokens = {
+            item.strip().casefold()
+            for item in self.headers.get("Transfer-Encoding", "").split(",")
+            if item.strip()
+        }
+        if transfer_tokens:
+            if transfer_tokens != {"chunked"}:
+                raise VendorRuntimeError("APK upload uses an unsupported transfer encoding")
+            total = self._copy_chunked(output)
+            if total <= 0:
+                raise VendorRuntimeError("APK upload is empty.")
+            return total
+
+        raw_length = self.headers.get("Content-Length")
+        if raw_length is None:
+            raise VendorRuntimeError("APK upload has no body length or streaming encoding")
+        try:
+            length = int(raw_length)
+        except ValueError as exc:
+            raise VendorRuntimeError("APK upload has an invalid body length") from exc
+        if length <= 0:
+            raise VendorRuntimeError("APK upload is empty.")
+        if length > MAX_APK_SIZE:
+            raise UploadTooLargeError("APK is too large.")
+        return self._copy_exact(output, length, 0)
+
     def do_GET(self) -> None:
         if self._deny_if_needed():
             return
@@ -136,31 +211,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
 
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-        except ValueError:
-            length = 0
-        if length <= 0:
-            self._json(HTTPStatus.LENGTH_REQUIRED, {"ok": False, "error": "APK upload is empty."})
-            return
-        if length > MAX_APK_SIZE:
-            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"ok": False, "error": "APK is too large."})
-            return
-
         upload_dir = self.server.data_dir / "vendor-upload"
         upload_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(upload_dir, 0o700)
         descriptor, temporary_name = tempfile.mkstemp(prefix=".yi-home.", suffix=".apk", dir=upload_dir)
         temporary = Path(temporary_name)
         try:
-            remaining = length
             with os.fdopen(descriptor, "wb") as output:
-                while remaining:
-                    chunk = self.rfile.read(min(1024 * 1024, remaining))
-                    if not chunk:
-                        raise VendorRuntimeError("APK upload ended before all bytes were received")
-                    output.write(chunk)
-                    remaining -= len(chunk)
+                received = self._copy_request_body(output)
                 output.flush()
                 os.fsync(output.fileno())
             os.chmod(temporary, 0o600)
@@ -172,10 +230,12 @@ class Handler(BaseHTTPRequestHandler):
                 {"ok": True, "installed": True, "size": installed.size, "sha256": installed.sha256},
             )
             print(
-                f"vendor_upload=installed; size={installed.size}; sha256={installed.sha256}; "
-                "apk_persisted=false; proprietary_bytes_exposed=false",
+                f"vendor_upload=installed; received={received}; size={installed.size}; "
+                f"sha256={installed.sha256}; apk_persisted=false; proprietary_bytes_exposed=false",
                 flush=True,
             )
+        except UploadTooLargeError as exc:
+            self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"ok": False, "error": str(exc)})
         except VendorRuntimeError as exc:
             self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
         except (OSError, RuntimeError) as exc:
