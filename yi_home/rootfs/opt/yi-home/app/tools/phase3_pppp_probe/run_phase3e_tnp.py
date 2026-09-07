@@ -26,7 +26,22 @@ import sys
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[2]
+def _source_root() -> Path:
+    """Find App helpers from their normal tree or a relocated research copy."""
+    candidates = (
+        *Path(__file__).resolve().parents,
+        *(Path(item) for item in sys.path),
+        Path("/opt/yi-home/app"),
+    )
+    for candidate in candidates:
+        if (candidate / "yi_cloud_probe.py").is_file() and (
+            candidate / "yi_tnp_oracle.py"
+        ).is_file():
+            return candidate
+    raise RuntimeError("YI App source helpers not found")
+
+
+ROOT = _source_root()
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -224,6 +239,18 @@ def _build_units(material: oracle.CameraMaterial) -> tuple[bytes, bytes, bytes, 
         _unit(START_AUDIO, 3, audio_payload, material.password, material.encrypted, prefix),
         _unit(STOP_LIVE, 4, stop_payload, material.password, material.encrypted, prefix),
     )
+
+
+def validate_first_4882(header: bytes, body: bytes) -> bool:
+    """Apply the same bounded Phase 3E checks as the native live probe."""
+    if len(header) != 8 or header[0] != TNP_VERSION or header[1] != 3:
+        return False
+    declared_size = struct.unpack(">I", header[4:8])[0]
+    if declared_size != len(body) or not 40 <= declared_size <= 4096 - len(header):
+        return False
+    command, number = struct.unpack(">HH", body[:4])
+    auth_result = struct.unpack(">I", body[8:12])[0]
+    return command == 4882 and number == 1 and auth_result == 0
 
 
 def _payload(material: oracle.CameraMaterial, units: tuple[bytes, bytes, bytes, bytes]) -> bytes:
