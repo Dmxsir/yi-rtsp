@@ -1,6 +1,8 @@
 # PPPP Clean-Room CR-4D — Frigate Container RTSP Parity
 
-Status: **READY FOR MANUAL PVE VALIDATION**
+Status: **LIVE PASS**
+
+Live evidence: `docs/PPPP_CR4D_LIVE_01.md`
 
 ## Goal
 
@@ -10,8 +12,8 @@ without changing production Frigate configuration, Home Assistant camera
 configuration, the production go2rtc instance, or the stable vendor-runtime
 transport.
 
-This is intentionally narrower than production Frigate integration. The first
-CR-4D gate proves container/network/codec parity using Frigate's own runtime
+This is intentionally narrower than production Frigate integration. The CR-4D
+gate proves container/network/codec parity using Frigate's own runtime
 container and ffprobe. It does not create or persist a Frigate camera.
 
 ## Source side
@@ -47,14 +49,14 @@ intended to be copied to `/tmp` inside the running Frigate container. It:
 - prints only sanitized codec/count/duration evidence;
 - does not mutate Frigate/go2rtc/Home Assistant configuration.
 
-The first CR-4D run therefore needs no Frigate config edit, no Frigate restart,
-and no Home Assistant restart. The external verifier is a bounded process
-inside the existing Frigate container only for the duration of the test.
+The CR-4D run therefore needs no Frigate config edit, no Frigate restart, and
+no Home Assistant restart. The external verifier is a bounded process inside
+the existing Frigate container only for the duration of the test.
 
 ## Offline validation
 
-GitHub Actions validated the implementation on the exact research branch head
-before manual PVE testing:
+GitHub Actions validated the implementation on the research branch before
+manual PVE testing:
 
 - full Linux unittest suite: `107/107 PASS`;
 - existing CR-4C tests remained green;
@@ -72,17 +74,20 @@ CR-4D PASS requires evidence from the same bounded run that:
 1. the CR-4D source probe reaches the existing CR-4C PASS gates;
 2. `cr4d_source_publication_result=PASS` is printed;
 3. the external verifier is executed inside the running Frigate container;
-4. it reaches the temporary App-container RTSP endpoint over the internal
-   container network;
+4. it reaches the temporary App-container RTSP endpoint over the isolated test
+   path;
 5. it validates H.264 1920x1080 and AAC 16 kHz mono;
 6. video and audio packet counts are both positive;
 7. the external consumer active duration is at least the configured minimum;
 8. it prints `cr4d_frigate_consumer_result=PASS`;
 9. STOP 767 and all temporary source-side cleanup still complete.
 
+All nine conditions were met by the live run recorded in
+`docs/PPPP_CR4D_LIVE_01.md`.
+
 ## What this does not prove
 
-A CR-4D PASS will not yet prove:
+CR-4D does not yet prove:
 
 - a persisted Frigate camera configuration;
 - Frigate detection/recording/event pipelines;
