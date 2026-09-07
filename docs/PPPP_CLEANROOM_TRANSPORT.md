@@ -326,6 +326,24 @@ of all processes, sockets, threads, and temporary files. These mechanics are
 offline-tested; real-device go2rtc/RTSP and Home Assistant/Frigate parity remain
 UNKNOWN.
 
+The first bounded manual CR-4C attempt on 2026-09-07 reached temporary go2rtc
+readiness, clean control, media enablement, and real MPEG-TS producer
+registration/media readiness, then failed with `AUDIO_PARSE_INVALID`. Its
+`767`, consumer, temporary go2rtc, and transport cleanup completed. This partial
+evidence does not satisfy the RTSP consumer gate; CR-4C remains **LIVE
+UNPROVEN**.
+
+Production already treats only `AudioUnitValidationError` as an isolated
+malformed/corrupt audio record that may be dropped. The shared research
+collector therefore remains strict by default for CR-4B, while CR-4C explicitly
+permits an absolute, configurable `--max-audio-validation-drops` count. Its
+experimental default is `3`; the next classified error fails as
+`AUDIO_VALIDATION_DROP_LIMIT`. Dropped records do not advance valid audio
+counts or timing, initialize format/timestamp state, enter the mux, or satisfy
+the source PASS gate. Other parser/runtime errors and AAC format changes remain
+fatal. The value `3` is a conservative first-retry bound, not a protocol
+invariant.
+
 ## Running the safe checks
 
 From a repository checkout:

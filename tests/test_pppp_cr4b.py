@@ -131,9 +131,17 @@ class _Video:
         }
 
 
+class _AudioValidationError(RuntimeError):
+    pass
+
+
 class _Audio:
+    AudioUnitValidationError = _AudioValidationError
+
     @staticmethod
     def decrypt_audio_unit(unit: bytes, _password: str):
+        if unit == b"drop":
+            raise _AudioValidationError("synthetic invalid audio unit")
         if unit == b"bad":
             raise ValueError("synthetic invalid audio")
         return int.from_bytes(unit, "big"), b"A", {
@@ -161,6 +169,18 @@ def _video(sequence: int, timestamp: int) -> bytes:
 
 
 class SustainedStateTest(unittest.TestCase):
+    def test_audio_validation_error_remains_fatal_by_default(self) -> None:
+        collector = cr4b.SustainedCollector(
+            _support(),
+            SimpleNamespace(password="x" * 15, encrypted=False),
+            _args(),
+            _FakeMux(),
+        )
+        with self.assertRaises(cr4b.ProbeError) as raised:
+            collector.accept(1, b"drop", 0.0)
+        self.assertEqual(raised.exception.category, "AUDIO_PARSE_INVALID")
+        self.assertEqual(collector.audio_validation_drops, 0)
+
     def test_counts_cannot_fake_minimum_activity_span(self) -> None:
         progress = cr4b.SustainedProgress(30.0, 2, 2, 2)
         for kind in ("I", "P", "audio"):

@@ -77,7 +77,15 @@ class SustainedProgress:
 class SustainedCollector:
     """Reuse existing parsers/reorder and stream accepted frames into one mux."""
 
-    def __init__(self, support: Any, material: Any, args: argparse.Namespace, mux: Any) -> None:
+    def __init__(
+        self,
+        support: Any,
+        material: Any,
+        args: argparse.Namespace,
+        mux: Any,
+        *,
+        max_audio_validation_drops: int = 0,
+    ) -> None:
         self.support = support
         self.material = material
         self.args = args
@@ -100,6 +108,8 @@ class SustainedCollector:
         self.first_audio_ts: int | None = None
         self.audio_format: dict[str, int] | None = None
         self.initial_av_delta_ms: int | None = None
+        self.max_audio_validation_drops = max_audio_validation_drops
+        self.audio_validation_drops = 0
 
     def _reserve_pre_mux(self, payload: bytes, frame_count: int, limit: int) -> None:
         if frame_count >= limit or self.pre_mux_bytes + len(payload) > self.args.pre_mux_bytes:
@@ -162,6 +172,19 @@ class SustainedCollector:
                 unit, self.material.password
             )
         except Exception as exc:
+            validation_error = getattr(
+                self.support.audio, "AudioUnitValidationError", None
+            )
+            if (
+                self.max_audio_validation_drops > 0
+                and isinstance(validation_error, type)
+                and issubclass(validation_error, Exception)
+                and isinstance(exc, validation_error)
+            ):
+                self.audio_validation_drops += 1
+                if self.audio_validation_drops > self.max_audio_validation_drops:
+                    raise ProbeError("AUDIO_VALIDATION_DROP_LIMIT") from exc
+                return
             raise ProbeError("AUDIO_PARSE_INVALID") from exc
         if audio_format != {"sample_rate": 16000, "channels": 1, "object_type": 2}:
             raise ProbeError("AUDIO_PARSE_INVALID")
@@ -202,11 +225,18 @@ def _collect_sustained(
     progress_hook: Callable[[SustainedCollector], None] | None = None,
     completion: Callable[[], bool] | None = None,
     incomplete_category: str = "MEDIA_SUSTAIN_TIMEOUT",
+    max_audio_validation_drops: int = 0,
 ) -> SustainedCollector:
     readers = {
         channel: TnpUnitReader(channel, args.max_record_bytes) for channel in (1, 2, 3)
     }
-    collector = SustainedCollector(support, material, args, mux)
+    collector = SustainedCollector(
+        support,
+        material,
+        args,
+        mux,
+        max_audio_validation_drops=max_audio_validation_drops,
+    )
     started = clock()
     deadline = started + args.duration
     while clock() < deadline:

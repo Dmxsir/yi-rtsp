@@ -668,6 +668,7 @@ def _args(**overrides: object) -> SimpleNamespace:
         "min_audio_frames": 2,
         "max_video_records": 100,
         "max_audio_records": 100,
+        "max_audio_validation_drops": 3,
         "media_start_timeout": 5.0,
         "media_stall_timeout": 5.0,
         "read_slice": 0.05,
@@ -689,6 +690,140 @@ def _args(**overrides: object) -> SimpleNamespace:
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+class _AudioValidationError(RuntimeError):
+    pass
+
+
+class _ValidationAudio:
+    AudioUnitValidationError = _AudioValidationError
+
+    @staticmethod
+    def decrypt_audio_unit(unit: bytes, _password: str):
+        if unit == b"drop":
+            raise _AudioValidationError("synthetic invalid audio unit")
+        if unit == b"runtime":
+            raise RuntimeError("synthetic unexpected parser failure")
+        if unit == b"format":
+            return 200, b"F", {
+                "sample_rate": 8000,
+                "channels": 1,
+                "object_type": 2,
+            }
+        return int.from_bytes(unit, "big"), b"A", {
+            "sample_rate": 16000,
+            "channels": 1,
+            "object_type": 2,
+        }
+
+    @staticmethod
+    def signed_delta32(current: int, base: int) -> int:
+        return current - base
+
+
+class _ValidationVideo:
+    class SequenceReorderBuffer:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+
+class _ValidationMux:
+    def __init__(self) -> None:
+        self.started = True
+        self.audio: list[bytes] = []
+
+    def feed_audio(self, payload: bytes) -> None:
+        self.audio.append(payload)
+
+
+def _audio_collector(
+    max_audio_validation_drops: int,
+) -> tuple[runner.SustainedCollector, _ValidationMux]:
+    mux = _ValidationMux()
+    collector = runner.SustainedCollector(
+        SimpleNamespace(video=_ValidationVideo, audio=_ValidationAudio),
+        SimpleNamespace(password="x" * 15, encrypted=False),
+        _args(),
+        mux,
+        max_audio_validation_drops=max_audio_validation_drops,
+    )
+    return collector, mux
+
+
+class AudioValidationPolicyTest(unittest.TestCase):
+    def test_isolated_validation_error_drops_then_valid_audio_continues(self) -> None:
+        collector, mux = _audio_collector(3)
+
+        collector.accept(1, b"drop", 1.0)
+        self.assertEqual(collector.audio_validation_drops, 1)
+        self.assertEqual(collector.channel_counts[1], 0)
+        self.assertEqual(collector.progress.counts["audio"], 0)
+        self.assertNotIn("audio", collector.progress.first_at)
+        self.assertIsNone(collector.audio_format)
+        self.assertIsNone(collector.first_audio_ts)
+        self.assertEqual(mux.audio, [])
+
+        collector.accept(1, (100).to_bytes(4, "big"), 2.0)
+        self.assertEqual(collector.channel_counts[1], 1)
+        self.assertEqual(collector.progress.counts["audio"], 1)
+        self.assertEqual(collector.progress.first_at["audio"], 2.0)
+        self.assertEqual(collector.first_audio_ts, 100)
+        self.assertEqual(
+            collector.audio_format,
+            {"sample_rate": 16000, "channels": 1, "object_type": 2},
+        )
+        self.assertEqual(mux.audio, [b"A"])
+
+    def test_validation_drop_limit_has_dedicated_failure(self) -> None:
+        collector, mux = _audio_collector(2)
+        collector.accept(1, b"drop", 1.0)
+        collector.accept(1, b"drop", 2.0)
+        with self.assertRaises(runner.ProbeError) as raised:
+            collector.accept(1, b"drop", 3.0)
+        self.assertEqual(raised.exception.category, "AUDIO_VALIDATION_DROP_LIMIT")
+        self.assertEqual(collector.audio_validation_drops, 3)
+        self.assertEqual(collector.progress.counts["audio"], 0)
+        self.assertEqual(mux.audio, [])
+
+    def test_generic_runtime_error_is_fatal(self) -> None:
+        collector, _mux = _audio_collector(3)
+        with self.assertRaises(runner.ProbeError) as raised:
+            collector.accept(1, b"runtime", 1.0)
+        self.assertEqual(raised.exception.category, "AUDIO_PARSE_INVALID")
+        self.assertEqual(collector.audio_validation_drops, 0)
+
+    def test_aac_format_mismatch_remains_fatal(self) -> None:
+        collector, mux = _audio_collector(3)
+        collector.accept(1, (100).to_bytes(4, "big"), 1.0)
+        with self.assertRaises(runner.ProbeError) as raised:
+            collector.accept(1, b"format", 2.0)
+        self.assertEqual(raised.exception.category, "AUDIO_PARSE_INVALID")
+        self.assertEqual(collector.channel_counts[1], 1)
+        self.assertEqual(mux.audio, [b"A"])
+
+    def test_only_dropped_audio_cannot_satisfy_source_gate(self) -> None:
+        collector, _mux = _audio_collector(3)
+        for kind in ("I", "P"):
+            collector.progress.observe(kind, 0.0)
+            collector.progress.observe(kind, 31.0)
+        collector.progress.reordered_frames = 4
+        collector.accept(1, b"drop", 31.0)
+        self.assertEqual(collector.progress.counts["audio"], 0)
+        self.assertFalse(collector.progress.passed)
+
+    def test_cr4c_default_is_small_configurable_and_nonnegative(self) -> None:
+        parser = runner._parser()
+        self.assertEqual(parser.parse_args([]).max_audio_validation_drops, 3)
+        self.assertEqual(
+            parser.parse_args(
+                ["--max-audio-validation-drops", "1"]
+            ).max_audio_validation_drops,
+            1,
+        )
+        with self.assertRaises(publish.CR4CError) as raised:
+            runner._validate_args(_args(max_audio_validation_drops=-1))
+        self.assertEqual(raised.exception.category, "CR4C_SETUP")
 
 
 class RunnerOrchestrationTest(unittest.TestCase):
@@ -840,12 +975,16 @@ class RunnerOrchestrationTest(unittest.TestCase):
             progress=progress,
             channel_counts={1: 4, 2: 2, 3: 3},
             initial_av_delta_ms=5,
+            audio_validation_drops=1,
         )
 
         def collect(*call_args: object, **call_kwargs: object) -> object:
             events.append("collect")
             call_args[4].start(0, 5)
             call_kwargs["progress_hook"](collector)
+            self.assertEqual(call_kwargs["max_audio_validation_drops"], 3)
+            if fail_stage == "audio_limit":
+                raise runner.ProbeError("AUDIO_VALIDATION_DROP_LIMIT")
             if fail_stage == "media":
                 raise runner.ProbeError("MEDIA_SUSTAIN_TIMEOUT")
             return collector
@@ -874,6 +1013,7 @@ class RunnerOrchestrationTest(unittest.TestCase):
             "temporary_go2rtc_ready=true",
             "cr3_control_result=PASS",
             "source_media_result=PASS",
+            "audio_validation_drops=1",
             "ingest_connected=true",
             "mpegts_published_bytes=376",
             "producer_media_ready=true",
@@ -907,6 +1047,7 @@ class RunnerOrchestrationTest(unittest.TestCase):
             ("go2rtc", "GO2RTC_START_FAILED"),
             ("control", "HANDSHAKE_TIMEOUT"),
             ("media", "MEDIA_SUSTAIN_TIMEOUT"),
+            ("audio_limit", "AUDIO_VALIDATION_DROP_LIMIT"),
             ("ingest", "GO2RTC_INGEST_FAILED"),
             ("producer", "GO2RTC_PRODUCER_NOT_READY"),
             ("rtsp", "RTSP_FORMAT_INVALID"),

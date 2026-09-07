@@ -136,6 +136,7 @@ def _validate_args(args: argparse.Namespace) -> None:
         or min(args.min_i_frames, args.min_p_frames, args.min_audio_frames) < 1
         or min(args.max_video_records, args.max_audio_records) < 1
         or args.max_record_bytes < 8
+        or args.max_audio_validation_drops < 0
         or not TS_PACKET_BYTES <= args.pump_chunk_bytes <= 1024 * 1024
         or min(args.pre_mux_video_frames, args.pre_mux_audio_frames, args.pre_mux_bytes) < 1
     ):
@@ -153,6 +154,9 @@ def _print_source(collector: SustainedCollector | None, session: Any | None) -> 
     print(f"source_video_p_frames={progress.counts['P']}", flush=True)
     print(f"source_video_reordered_frames={progress.reordered_frames}", flush=True)
     print(f"source_audio_frames={progress.counts['audio']}", flush=True)
+    print(
+        f"audio_validation_drops={collector.audio_validation_drops}", flush=True
+    )
     for channel in (1, 2, 3):
         print(f"channel{channel}_tnp_units={collector.channel_counts[channel]}", flush=True)
     print("source_aac_sample_rate=16000", flush=True)
@@ -279,15 +283,22 @@ def _run_live(args: argparse.Namespace) -> int:
         session.enable_read_channels((1, 2, 3))
         print("media_channels_enabled=true", flush=True)
         coordinator.start()
+
+        def check_progress(current: SustainedCollector) -> None:
+            nonlocal collector
+            collector = current
+            coordinator.raise_if_failed()
+
         collector = _collect_sustained(
             session,
             support,
             material,
             args,
             mux,
-            progress_hook=lambda _collector: coordinator.raise_if_failed(),
+            progress_hook=check_progress,
             completion=lambda: coordinator.done,
             incomplete_category="RTSP_CONSUMER_TIMEOUT",
+            max_audio_validation_drops=args.max_audio_validation_drops,
         )
         coordinator.raise_if_failed()
     except (CR4CError, ProbeError, MuxError, TransportError) as exc:
@@ -404,6 +415,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-audio-frames", type=int, default=2)
     parser.add_argument("--max-video-records", type=int, default=4096)
     parser.add_argument("--max-audio-records", type=int, default=4096)
+    parser.add_argument("--max-audio-validation-drops", type=int, default=3)
     parser.add_argument("--media-start-timeout", type=float, default=5.0)
     parser.add_argument("--media-stall-timeout", type=float, default=5.0)
     parser.add_argument("--read-slice", type=float, default=0.05)
