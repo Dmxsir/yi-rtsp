@@ -121,6 +121,17 @@ class ExternalTemporaryGo2RTC(publish.TemporaryGo2RTC):
             raise publish.CR4CError("GO2RTC_START_FAILED") from exc
 
 
+class CR4DController(ExternalTemporaryGo2RTC):
+    """Adapter that forces CR-4D temporary state under /tmp/yi-cr4d."""
+
+    def __init__(self, *controller_args: object, **controller_kwargs: object) -> None:
+        if len(controller_args) >= 7:
+            controller_args = (*controller_args[:6], TEMP_ROOT, *controller_args[7:])
+        else:
+            controller_kwargs["temp_root"] = TEMP_ROOT
+        super().__init__(*controller_args, **controller_kwargs)
+
+
 def self_test() -> int:
     config = render_external_go2rtc_config(
         publish.DEFAULT_API_PORT, publish.DEFAULT_RTSP_PORT
@@ -128,7 +139,10 @@ def self_test() -> int:
     assert f'listen: "{publish.LOOPBACK}:{publish.DEFAULT_API_PORT}"' in config
     assert f'listen: "{EXTERNAL_RTSP_BIND}:{publish.DEFAULT_RTSP_PORT}"' in config
     assert config.count(publish.STREAM_NAME) == 1
-    assert "1984" not in config and 'listen: "0.0.0.0:8554"' not in config
+    assert 'listen: "127.0.0.1:1984"' not in config
+    assert 'listen: "0.0.0.0:1984"' not in config
+    assert 'listen: "127.0.0.1:8554"' not in config
+    assert 'listen: "0.0.0.0:8554"' not in config
     print(
         "CR4D_SELF_TEST=PASS; network_used=false; processes_started=false; "
         "device_traffic=false; production_config_changed=false; "
@@ -158,20 +172,7 @@ def main() -> int:
         parser.error("--camera-id is required for a live probe")
 
     original_controller = cr4c.TemporaryGo2RTC
-    original_root = None
     try:
-        cr4c.TemporaryGo2RTC = ExternalTemporaryGo2RTC
-        # The CR-4C orchestrator supplies its own temp root positionally. Keep
-        # the new controller isolated by replacing that positional root at
-        # construction time through a tiny adapter class.
-        class CR4DController(ExternalTemporaryGo2RTC):
-            def __init__(self, *controller_args: object, **controller_kwargs: object) -> None:
-                if len(controller_args) >= 7:
-                    controller_args = (*controller_args[:6], TEMP_ROOT, *controller_args[7:])
-                else:
-                    controller_kwargs["temp_root"] = TEMP_ROOT
-                super().__init__(*controller_args, **controller_kwargs)
-
         cr4c.TemporaryGo2RTC = CR4DController
         print("cr4d_external_rtsp_enabled=true", flush=True)
         print("cr4d_api_scope=loopback", flush=True)
@@ -179,7 +180,6 @@ def main() -> int:
         result = cr4c._run_live(args)
     finally:
         cr4c.TemporaryGo2RTC = original_controller
-        _ = original_root
 
     print(
         f"cr4d_source_publication_result={'PASS' if result == 0 else 'FAIL'}",
