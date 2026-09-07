@@ -18,6 +18,8 @@ try:
         CR4CError,
         DEFAULT_API_PORT,
         DEFAULT_RTSP_PORT,
+        INGEST_FINALIZE_HTTP_RESPONSE,
+        INGEST_FINALIZE_PEER_CLOSED,
         STREAM_NAME,
         ChunkedIngestSink,
         MpegTsIngestMux,
@@ -39,6 +41,8 @@ except ImportError:  # Direct execution from a relocated clean-room directory.
         CR4CError,
         DEFAULT_API_PORT,
         DEFAULT_RTSP_PORT,
+        INGEST_FINALIZE_HTTP_RESPONSE,
+        INGEST_FINALIZE_PEER_CLOSED,
         STREAM_NAME,
         ChunkedIngestSink,
         MpegTsIngestMux,
@@ -178,6 +182,10 @@ def _print_publication(
         print("ingest_connected=true", flush=True)
         print(
             f"mpegts_published_bytes={mux_result['mpegts_published_bytes']}",
+            flush=True,
+        )
+        print(
+            f"ingest_finalize_mode={mux_result['ingest_finalize_mode']}",
             flush=True,
         )
     if coordinator is None:
@@ -362,12 +370,28 @@ def _run_live(args: argparse.Namespace) -> int:
 
     _print_source(collector, session)
     _print_publication(mux_result, coordinator)
+    producer = coordinator.producer if coordinator is not None else None
+    rtsp_result = coordinator.result if coordinator is not None else None
     passed = bool(
         collector
         and collector.progress.passed
         and mux_result
+        and mux_result.get("mpegts_published_bytes", 0) > 0
+        and mux_result.get("ingest_finalize_mode")
+        in (INGEST_FINALIZE_HTTP_RESPONSE, INGEST_FINALIZE_PEER_CLOSED)
         and coordinator
         and coordinator.done
+        and producer
+        and producer.get("producer_registered")
+        and producer.get("producer_media_ready")
+        and rtsp_result
+        and rtsp_result.get("video_codec") == "h264"
+        and rtsp_result.get("video_size") == "1920x1080"
+        and rtsp_result.get("audio_codec") == "aac"
+        and rtsp_result.get("audio_sample_rate") == 16000
+        and rtsp_result.get("audio_channels") == 1
+        and rtsp_result.get("video_packets", 0) > 0
+        and rtsp_result.get("audio_packets", 0) > 0
         and coordinator.consumer.stopped
         and stop_sent
         and controller

@@ -308,17 +308,32 @@ class ProducerReadinessTest(unittest.TestCase):
 
 
 class _Response:
-    def __init__(self, status: int = 200) -> None:
+    def __init__(
+        self, status: int = 200, read_error: BaseException | None = None
+    ) -> None:
         self.status = status
+        self.read_error = read_error
 
     def read(self, _limit: int) -> bytes:
+        if self.read_error is not None:
+            raise self.read_error
         return b""
 
 
 class _Connection:
-    def __init__(self, *_args: object, fail_at: int | None = None, status: int = 200, **_kwargs: object) -> None:
+    def __init__(
+        self,
+        *_args: object,
+        fail_at: int | None = None,
+        status: int = 200,
+        response_error: BaseException | None = None,
+        response_read_error: BaseException | None = None,
+        **_kwargs: object,
+    ) -> None:
         self.fail_at = fail_at
         self.status = status
+        self.response_error = response_error
+        self.response_read_error = response_read_error
         self.sent: list[bytes] = []
         self.request: tuple[str, str] | None = None
         self.headers: list[tuple[str, str]] = []
@@ -339,7 +354,9 @@ class _Connection:
         self.sent.append(payload)
 
     def getresponse(self) -> _Response:
-        return _Response(self.status)
+        if self.response_error is not None:
+            raise self.response_error
+        return _Response(self.status, self.response_read_error)
 
     def close(self) -> None:
         self.closed = True
@@ -361,7 +378,7 @@ class IngestTest(unittest.TestCase):
         )
         sink.open(b"first")
         sink.send(b"next")
-        sink.finish()
+        self.assertEqual(sink.finish(), publish.INGEST_FINALIZE_HTTP_RESPONSE)
         self.assertEqual(calls, ["connection"])
         self.assertEqual(connection.request, ("POST", sink.path))
         self.assertEqual(
@@ -379,34 +396,95 @@ class IngestTest(unittest.TestCase):
         self.assertEqual(sink.published_bytes, 9)
         self.assertTrue(connection.closed)
 
-    def test_refusal_reset_http_error_and_timeout_are_sanitized(self) -> None:
+    def test_open_first_chunk_and_midstream_failures_remain_fatal(self) -> None:
         def refused(*_args: object, **_kwargs: object) -> _Connection:
             raise ConnectionRefusedError
 
-        cases = (
-            publish.ChunkedIngestSink(11984, 1.0, refused),
-            publish.ChunkedIngestSink(
-                11984,
-                1.0,
-                lambda *_a, **_k: (_ for _ in ()).throw(socket.timeout()),
+        for name, sink, midstream in (
+            ("open", publish.ChunkedIngestSink(11984, 1.0, refused), False),
+            (
+                "first_chunk",
+                publish.ChunkedIngestSink(
+                    11984, 1.0, lambda *_a, **_k: _Connection(fail_at=0)
+                ),
+                False,
             ),
-            publish.ChunkedIngestSink(11984, 1.0, lambda *_a, **_k: _Connection(fail_at=0)),
-            publish.ChunkedIngestSink(11984, 1.0, lambda *_a, **_k: _Connection(status=500)),
-            publish.ChunkedIngestSink(
-                11984,
-                1.0,
-                lambda *_a, **_k: _Connection(fail_at=3),
+            (
+                "midstream",
+                publish.ChunkedIngestSink(
+                    11984, 1.0, lambda *_a, **_k: _Connection(fail_at=3)
+                ),
+                True,
             ),
-        )
-        for index, sink in enumerate(cases):
-            with self.subTest(index=index):
+        ):
+            with self.subTest(name=name):
                 with self.assertRaises(publish.CR4CError) as raised:
                     sink.open(b"first")
-                    if index == 3:
-                        sink.finish()
-                    elif index == 4:
-                        sink.send(b"timeout")
+                    if midstream:
+                        sink.send(b"next")
                 self.assertEqual(raised.exception.category, "GO2RTC_INGEST_FAILED")
+
+    def test_terminal_send_failure_is_fatal(self) -> None:
+        connection = _Connection(fail_at=3)
+        sink = publish.ChunkedIngestSink(
+            11984, 1.0, lambda *_a, **_k: connection
+        )
+        sink.open(b"first")
+        with self.assertRaises(publish.CR4CError) as raised:
+            sink.finish()
+        self.assertEqual(
+            raised.exception.category, "GO2RTC_INGEST_FINALIZE_SEND_FAILED"
+        )
+        self.assertFalse(sink.finished)
+
+    def test_remote_disconnect_after_terminal_is_classified(self) -> None:
+        connection = _Connection(
+            response_error=publish.http.client.RemoteDisconnected("synthetic")
+        )
+        sink = publish.ChunkedIngestSink(
+            11984, 1.0, lambda *_a, **_k: connection
+        )
+        sink.open(b"first")
+        self.assertEqual(sink.finish(), publish.INGEST_FINALIZE_PEER_CLOSED)
+        self.assertTrue(sink.finished)
+        self.assertEqual(connection.sent[-1], b"0\r\n\r\n")
+
+    def test_finalize_rejection_timeout_reset_and_protocol_remain_fatal(self) -> None:
+        cases = (
+            (_Connection(status=500), "GO2RTC_INGEST_REJECTED"),
+            (
+                _Connection(response_error=socket.timeout()),
+                "GO2RTC_INGEST_FINALIZE_TIMEOUT",
+            ),
+            (
+                _Connection(response_error=ConnectionResetError()),
+                "GO2RTC_INGEST_FINALIZE_PROTOCOL_FAILED",
+            ),
+            (
+                _Connection(
+                    response_error=publish.http.client.BadStatusLine("synthetic")
+                ),
+                "GO2RTC_INGEST_FINALIZE_PROTOCOL_FAILED",
+            ),
+            (
+                _Connection(
+                    response_read_error=publish.http.client.RemoteDisconnected(
+                        "synthetic"
+                    )
+                ),
+                "GO2RTC_INGEST_FINALIZE_PROTOCOL_FAILED",
+            ),
+        )
+        for connection, category in cases:
+            with self.subTest(category=category):
+                sink = publish.ChunkedIngestSink(
+                    11984, 1.0, lambda *_a, **_k: connection
+                )
+                sink.open(b"first")
+                with self.assertRaises(publish.CR4CError) as raised:
+                    sink.finish()
+                self.assertEqual(raised.exception.category, category)
+                self.assertFalse(sink.finished)
 
     def test_mux_pump_prebuffers_a_complete_ts_chunk_and_retains_no_payload(self) -> None:
         packet = b"\x47" + bytes(187)
@@ -425,20 +503,86 @@ class IngestTest(unittest.TestCase):
                 events.append(("send", len(chunk)))
                 self.published_bytes += len(chunk)
 
-            def finish(self) -> None:
+            def finish(self) -> str:
                 events.append(("finish", 0))
+                return publish.INGEST_FINALIZE_HTTP_RESPONSE
 
             def abort(self) -> None:
                 events.append(("abort", 0))
 
         mux = publish.MpegTsIngestMux("ffmpeg", lambda *_: "setts", Sink(), 1.0, 188)
+        mux.started = True
         mux._mux = _Process()
         mux._mux.stdout = io.BytesIO(packet * 2)
+        mux._video = io.BytesIO()
+        mux._audio = io.BytesIO()
         mux._pump_output()
+        result = mux.finish()
         self.assertEqual(events, [("open", 188), ("send", 188), ("finish", 0)])
         self.assertTrue(mux.ingest_connected.is_set())
-        self.assertEqual(mux._result, {"mpegts_bytes": 376, "mpegts_packets": 2})
+        self.assertEqual(result["mpegts_bytes"], 376)
+        self.assertEqual(result["mpegts_packets"], 2)
+        self.assertEqual(
+            result["ingest_finalize_mode"], publish.INGEST_FINALIZE_HTTP_RESPONSE
+        )
         self.assertFalse(hasattr(mux, "payload"))
+
+    def test_mux_propagates_peer_close_finalize_mode(self) -> None:
+        packet = b"\x47" + bytes(187)
+        connection = _Connection(
+            response_error=publish.http.client.RemoteDisconnected("synthetic")
+        )
+        sink = publish.ChunkedIngestSink(
+            11984, 1.0, lambda *_a, **_k: connection
+        )
+        mux = publish.MpegTsIngestMux(
+            "ffmpeg", lambda *_: "setts", sink, 1.0, 188
+        )
+        mux.started = True
+        mux._mux = _Process()
+        mux._mux.stdout = io.BytesIO(packet)
+        mux._video = io.BytesIO()
+        mux._audio = io.BytesIO()
+        mux._pump_output()
+        result = mux.finish()
+        self.assertEqual(
+            result["ingest_finalize_mode"], publish.INGEST_FINALIZE_PEER_CLOSED
+        )
+        self.assertEqual(result["mpegts_published_bytes"], 188)
+
+    def test_mux_finish_requires_completed_pump_and_positive_bytes(self) -> None:
+        class Sink:
+            def __init__(self, published_bytes: int) -> None:
+                self.published_bytes = published_bytes
+
+            def abort(self) -> None:
+                return None
+
+        class AlivePump:
+            def join(self, timeout: float | None = None) -> None:
+                return None
+
+            def is_alive(self) -> bool:
+                return True
+
+        for sink, pump, category in (
+            (Sink(188), AlivePump(), "MUX_PIPE_BACKPRESSURE"),
+            (Sink(0), None, "MPEGTS_STREAM_INVALID"),
+        ):
+            with self.subTest(category=category):
+                mux = publish.MpegTsIngestMux(
+                    "ffmpeg", lambda *_: "setts", sink, 1.0, 188
+                )
+                mux.started = True
+                mux._mux = _Process()
+                mux._video = io.BytesIO()
+                mux._audio = io.BytesIO()
+                mux._pump = pump
+                mux._result = {"mpegts_bytes": 188, "mpegts_packets": 1}
+                mux._finalize_mode = publish.INGEST_FINALIZE_HTTP_RESPONSE
+                with self.assertRaises(publish.CR4CError) as raised:
+                    mux.finish()
+                self.assertEqual(raised.exception.category, category)
 
     def test_mux_detects_partial_ts_and_downstream_epipe(self) -> None:
         class FailedSink:
@@ -827,7 +971,11 @@ class AudioValidationPolicyTest(unittest.TestCase):
 
 
 class RunnerOrchestrationTest(unittest.TestCase):
-    def _run(self, fail_stage: str | None = None) -> tuple[int, str, list[str]]:
+    def _run(
+        self,
+        fail_stage: str | None = None,
+        finalize_mode: str = publish.INGEST_FINALIZE_HTTP_RESPONSE,
+    ) -> tuple[int, str, list[str]]:
         events: list[str] = []
         control = bytes((2, 3, 0, 0)) + struct.pack(">I", 40) + bytes(40)
 
@@ -896,11 +1044,14 @@ class RunnerOrchestrationTest(unittest.TestCase):
                 events.append("mux_start")
                 self.started = True
 
-            def finish(self) -> dict[str, int]:
+            def finish(self) -> dict[str, object]:
                 events.append("mux_finish")
                 if fail_stage == "mux":
                     raise publish.CR4CError("MUX_EARLY_EXIT")
-                return {"mpegts_published_bytes": 376}
+                return {
+                    "mpegts_published_bytes": 0 if fail_stage == "empty" else 376,
+                    "ingest_finalize_mode": finalize_mode,
+                }
 
             def abort(self) -> None:
                 events.append("mux_abort")
@@ -966,7 +1117,7 @@ class RunnerOrchestrationTest(unittest.TestCase):
             pppp_did="", password="x" * 15, encrypted=False, clear=lambda: events.append("clear")
         )
         progress = SimpleNamespace(
-            passed=True,
+            passed=fail_stage != "source_gate",
             active_seconds=30.0,
             counts={"I": 2, "P": 3, "audio": 4},
             reordered_frames=5,
@@ -1016,6 +1167,7 @@ class RunnerOrchestrationTest(unittest.TestCase):
             "audio_validation_drops=1",
             "ingest_connected=true",
             "mpegts_published_bytes=376",
+            "ingest_finalize_mode=http_response",
             "producer_media_ready=true",
             "rtsp_consumer_result=PASS",
             "stop_live_767_sent=true",
@@ -1041,6 +1193,37 @@ class RunnerOrchestrationTest(unittest.TestCase):
             "clear",
         )
         self.assertEqual(tuple(events), expected)
+
+    def test_peer_close_requires_every_existing_pass_gate(self) -> None:
+        result, output, _events = self._run(
+            finalize_mode=publish.INGEST_FINALIZE_PEER_CLOSED
+        )
+        self.assertEqual(result, 0)
+        self.assertIn(
+            "ingest_finalize_mode=peer_closed_after_terminal", output
+        )
+
+        result, output, _events = self._run(finalize_mode="unexpected")
+        self.assertEqual(result, 2)
+        self.assertNotIn("cr4c_result=PASS", output)
+
+        for stage in (
+            "source_gate",
+            "media",
+            "producer",
+            "rtsp",
+            "mux",
+            "stop",
+            "empty",
+        ):
+            with self.subTest(stage=stage):
+                result, output, events = self._run(
+                    stage, publish.INGEST_FINALIZE_PEER_CLOSED
+                )
+                self.assertEqual(result, 2)
+                self.assertNotIn("cr4c_result=PASS", output)
+                if stage in ("source_gate", "producer", "rtsp"):
+                    self.assertNotIn("mux_finish", events)
 
     def test_major_stage_failures_cleanup_without_pass(self) -> None:
         for stage, category in (

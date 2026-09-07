@@ -344,6 +344,24 @@ the source PASS gate. Other parser/runtime errors and AAC format changes remain
 fatal. The value `3` is a conservative first-retry bound, not a protocol
 invariant.
 
+The second bounded manual attempt on 2026-09-07 passed the sustained source
+gate for 32.759 seconds with 10 I-frames, 531 P-frames, 541 reordered video
+frames, 536 valid AAC frames, and 3 bounded audio-validation drops. The
+temporary MPEG-TS producer registered and became media-ready. The loopback
+RTSP consumer then passed for 10.372 seconds with H.264 1920x1080, AAC 16 kHz
+mono, 144 video packets, and 125 audio packets. `767`, consumer, temporary
+go2rtc, and transport cleanup completed, but terminal ingest finalization was
+reported as `GO2RTC_INGEST_FAILED`. CR-4C therefore remains **LIVE UNPROVEN**.
+
+Finalization now reports `http_response` for a normal HTTP response and
+`peer_closed_after_terminal` only for exact `RemoteDisconnected` after the
+terminal chunk was sent successfully. The latter is accepted only by the
+top-level CR-4C gate after valid TS with positive published bytes, source PASS,
+producer registration/media readiness, RTSP consumer PASS, `767`, and all
+cleanup checks. Terminal send failure, timeout, reset/protocol failure, HTTP
+rejection, and opening or mid-stream ingest failure remain fatal. No such
+terminal outcome is accepted by CR-4B or production code.
+
 ## Running the safe checks
 
 From a repository checkout:

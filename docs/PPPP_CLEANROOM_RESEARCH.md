@@ -368,6 +368,10 @@ The first bounded manual CR-4C attempt on 2026-09-07 reached temporary go2rtc re
 
 The production relay already drops only isolated `AudioUnitValidationError` records while leaving session/config and other parser failures fatal. The shared research collector now keeps CR-4B strict by default with a zero drop allowance. CR-4C explicitly uses the configurable absolute `--max-audio-validation-drops` limit, with an experimental default of `3` for the next manual retry. Dropped records do not change valid audio counts/timing/format/timestamp state or enter the mux; exceeding the limit fails as `AUDIO_VALIDATION_DROP_LIMIT`. This bound is a conservative research setting, not a protocol invariant.
 
+The second bounded manual attempt on 2026-09-07 passed the sustained source gate for 32.759 seconds with 10 I-frames, 531 P-frames, 541 reordered video frames, 536 valid AAC frames, and 3 bounded audio-validation drops. The temporary producer registered and became media-ready, and the loopback RTSP consumer passed for 10.372 seconds with H.264 1920x1080, AAC 16 kHz mono, 144 video packets, and 125 audio packets. `767`, the consumer, temporary go2rtc, and the clean transport all stopped successfully. The final result nevertheless remained FAIL because waiting for the terminal chunked-HTTP response produced the ambiguous `GO2RTC_INGEST_FAILED`; therefore CR-4C remains **LIVE UNPROVEN**.
+
+Terminal ingest finalization now distinguishes a normal HTTP response from the exact `RemoteDisconnected` peer EOF observed only after the terminal chunk was sent successfully. The latter can satisfy this bounded research gate only through the existing source, producer, RTSP, positive-TS, `767`, mux, and cleanup checks. Terminal send failure, timeout, reset/protocol failure, HTTP rejection, and every opening or mid-stream ingest failure remain fatal with sanitized stage-specific categories. A subsequent manual PASS is still required.
+
 ### CR-5 — YI server rendezvous
 
 Implement YI-specific server connection using cloud-supplied DID + InitString + license/device-key information.

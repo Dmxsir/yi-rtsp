@@ -41,6 +41,8 @@ STREAM_NAME = "yi_cr4c_probe"
 DEFAULT_API_PORT = 11984
 DEFAULT_RTSP_PORT = 18554
 PRODUCTION_PORTS = frozenset((1984, 8554))
+INGEST_FINALIZE_HTTP_RESPONSE = "http_response"
+INGEST_FINALIZE_PEER_CLOSED = "peer_closed_after_terminal"
 
 
 class CR4CError(RuntimeError):
@@ -307,6 +309,7 @@ class ChunkedIngestSink:
         self.connected = False
         self.finished = False
         self.published_bytes = 0
+        self.finalize_mode: str | None = None
 
     @property
     def path(self) -> str:
@@ -348,19 +351,42 @@ class ChunkedIngestSink:
             raise CR4CError("GO2RTC_INGEST_FAILED")
         self._send_chunk(chunk)
 
-    def finish(self) -> None:
+    def finish(self) -> str:
         if self.connection is None or not self.connected or self.finished:
             raise CR4CError("GO2RTC_INGEST_FAILED")
         connection = self.connection
         try:
-            connection.send(b"0\r\n\r\n")
-            response = connection.getresponse()
-            response.read(1024)
-            if response.status >= 400:
-                raise OSError("ingest rejected")
+            try:
+                connection.send(b"0\r\n\r\n")
+            except socket.timeout as exc:
+                raise CR4CError("GO2RTC_INGEST_FINALIZE_TIMEOUT") from exc
+            except OSError as exc:
+                raise CR4CError("GO2RTC_INGEST_FINALIZE_SEND_FAILED") from exc
+            except http.client.HTTPException as exc:
+                raise CR4CError("GO2RTC_INGEST_FINALIZE_PROTOCOL_FAILED") from exc
+
+            try:
+                response = connection.getresponse()
+            except http.client.RemoteDisconnected:
+                self.finalize_mode = INGEST_FINALIZE_PEER_CLOSED
+            except socket.timeout as exc:
+                raise CR4CError("GO2RTC_INGEST_FINALIZE_TIMEOUT") from exc
+            except (OSError, http.client.HTTPException) as exc:
+                raise CR4CError("GO2RTC_INGEST_FINALIZE_PROTOCOL_FAILED") from exc
+            else:
+                if response.status >= 400:
+                    raise CR4CError("GO2RTC_INGEST_REJECTED")
+                try:
+                    response.read(1024)
+                except socket.timeout as exc:
+                    raise CR4CError("GO2RTC_INGEST_FINALIZE_TIMEOUT") from exc
+                except (OSError, http.client.HTTPException) as exc:
+                    raise CR4CError(
+                        "GO2RTC_INGEST_FINALIZE_PROTOCOL_FAILED"
+                    ) from exc
+                self.finalize_mode = INGEST_FINALIZE_HTTP_RESPONSE
             self.finished = True
-        except (OSError, http.client.HTTPException) as exc:
-            raise CR4CError("GO2RTC_INGEST_FAILED") from exc
+            return self.finalize_mode
         finally:
             connection.close()
 
@@ -404,6 +430,7 @@ class MpegTsIngestMux:
         self._pump: threading.Thread | None = None
         self._pump_error: str | None = None
         self._result: dict[str, int] | None = None
+        self._finalize_mode: str | None = None
 
     @property
     def failure_category(self) -> str | None:
@@ -412,6 +439,10 @@ class MpegTsIngestMux:
     @property
     def pump_alive(self) -> bool:
         return bool(self._pump and self._pump.is_alive())
+
+    @property
+    def finalize_mode(self) -> str | None:
+        return self._finalize_mode
 
     def start(self, video_offset_ms: int, audio_offset_ms: int) -> None:
         if self.started:
@@ -462,7 +493,7 @@ class MpegTsIngestMux:
             if pending:
                 raise MuxError("MPEGTS_STREAM_INVALID")
             self._result = counter.finish()
-            self.sink.finish()
+            self._finalize_mode = self.sink.finish()
         except (CR4CError, MuxError) as exc:
             self._pump_error = exc.category
             self.sink.abort()
@@ -494,7 +525,7 @@ class MpegTsIngestMux:
             except (BrokenPipeError, OSError):
                 pass
 
-    def finish(self) -> dict[str, int]:
+    def finish(self) -> dict[str, Any]:
         if not self.started or self.finished or self._mux is None:
             raise CR4CError("MUX_START_FAILED")
         self._close(self._video)
@@ -516,10 +547,19 @@ class MpegTsIngestMux:
             raise CR4CError(self._pump_error)
         if returncode != 0:
             raise CR4CError("MUX_EARLY_EXIT")
-        if self._result is None or self.sink.published_bytes <= 0:
+        if (
+            self._result is None
+            or self.sink.published_bytes <= 0
+            or self._finalize_mode
+            not in (INGEST_FINALIZE_HTTP_RESPONSE, INGEST_FINALIZE_PEER_CLOSED)
+        ):
             raise CR4CError("MPEGTS_STREAM_INVALID")
         self.finished = True
-        return {**self._result, "mpegts_published_bytes": self.sink.published_bytes}
+        return {
+            **self._result,
+            "mpegts_published_bytes": self.sink.published_bytes,
+            "ingest_finalize_mode": self._finalize_mode,
+        }
 
     def abort(self) -> None:
         self._close(self._video)
