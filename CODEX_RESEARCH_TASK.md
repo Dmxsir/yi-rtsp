@@ -1,4 +1,4 @@
-# Codex Research Task — CR-4C ingest-finalization hardening after second live run
+# Codex Research Task — CR-4C exact go2rtc EOF-finalization classification
 
 ## Scope
 
@@ -6,11 +6,11 @@ Work only in repository `Dmxsir/yi-rtsp` on branch `pppp-cleanroom`.
 
 Do **not** modify, merge, rebase, tag, release, or otherwise change `main` or the installed production `0.2.0` vendor-runtime path. Keep PR #2 open and draft.
 
-Do **not** perform live device traffic. This is a narrow CR-4C corrective task after the second manual live run proved the full source + go2rtc + RTSP consumer path but still ended with a teardown/finalization failure.
+Do **not** perform live camera/device traffic. This is a narrow CR-4C corrective task after the latest manual run proved the sustained source and RTSP consumer gates but ended with `GO2RTC_INGEST_REJECTED` only after the chunked MPEG-TS request was finalized.
 
-## Second live result to preserve
+## Latest live evidence to preserve
 
-The manual run on 2026-09-07 produced this sanitized result:
+The latest manual run on 2026-09-07 used an explicit experimental retry override `--max-audio-validation-drops 12` and produced this sanitized result:
 
 ```text
 temporary_go2rtc_ready=true
@@ -21,18 +21,18 @@ rtsp_consumer_stopped=true
 temporary_go2rtc_stopped=true
 transport_closed=true
 source_media_started=true
-source_media_active_seconds=32.759
+source_media_active_seconds=32.168
 source_video_i_frames=10
-source_video_p_frames=531
-source_video_reordered_frames=541
-source_audio_frames=536
-audio_validation_drops=3
-channel1_tnp_units=536
+source_video_p_frames=509
+source_video_reordered_frames=519
+source_audio_frames=516
+audio_validation_drops=2
+channel1_tnp_units=516
 channel2_tnp_units=10
-channel3_tnp_units=531
+channel3_tnp_units=509
 source_aac_sample_rate=16000
 source_aac_channels=1
-initial_av_delta_ms=30
+initial_av_delta_ms=17
 drw_retries=0
 d2_observed=0
 source_media_result=PASS
@@ -44,204 +44,217 @@ rtsp_video_size=1920x1080
 rtsp_audio_codec=aac
 rtsp_audio_sample_rate=16000
 rtsp_audio_channels=1
-rtsp_video_packets=144
+rtsp_video_packets=160
 rtsp_audio_packets=125
-rtsp_consumer_active_seconds=10.372
+rtsp_consumer_active_seconds=10.540
 rtsp_consumer_result=PASS
-cr4c_result=FAIL; failure_category=GO2RTC_INGEST_FAILED
+cr4c_result=FAIL; failure_category=GO2RTC_INGEST_REJECTED
 ```
 
 Interpretation:
 
-- CR-3 control/auth passed.
-- sustained clean H.264/AAC source gate passed for >30 seconds.
-- exactly 3 isolated `AudioUnitValidationError` records were dropped within the configured experimental bound; 536 valid AAC frames still passed the source gate.
-- temporary go2rtc registered a real MPEG-TS producer and reported media-ready.
-- a real loopback RTSP consumer successfully received H.264 1920x1080 + AAC 16 kHz mono for >10 seconds, with positive video/audio packet counts.
-- STOP 767, RTSP consumer stop, temporary go2rtc stop, and clean transport close all completed.
-- the only remaining failure category was `GO2RTC_INGEST_FAILED`, observed during finalization/teardown after the RTSP consumer gate had already passed.
+- clean CR-3 control/auth passed;
+- sustained valid source media passed for >30 seconds;
+- only 2 isolated classified audio-validation records were dropped, while 516 valid AAC records passed;
+- temporary go2rtc producer registered and became media-ready;
+- the local RTSP consumer passed with H.264 1920x1080 + AAC 16 kHz mono and positive packet counts for >10 seconds;
+- STOP 767, consumer stop, temporary go2rtc stop, and clean PPPP close succeeded;
+- the only failure occurred after terminal HTTP finalization returned an HTTP status currently classified as `GO2RTC_INGEST_REJECTED`.
 
-Do **not** call CR-4C full PASS yet. The goal of this task is to determine and fix only this finalization false-negative without weakening streaming failure detection.
+CR-4C remains **LIVE UNPROVEN** until one manual run returns `cr4c_result=PASS`.
 
-## Root cause area to inspect first
+## Verified go2rtc v1.9.14 behavior — treat as source-grounded evidence
 
-Read these files before editing:
-
-- `tools/pppp_cleanroom/rtsp_publish.py`
-- `tools/pppp_cleanroom/probe_rtsp_publish.py`
-- `tools/pppp_cleanroom/mux_pipe.py`
-- `tools/pppp_cleanroom/probe_sustained_mux.py`
-- `tests/test_pppp_cr4c.py`
-- `tests/test_pppp_cr4b.py`
-- `yi_home/rootfs/opt/yi-home/app/yi_runtime_lifecycle.py`
-- `yi_home/rootfs/opt/yi-home/app/yi_media_publisher.py`
-- `docs/PPPP_CLEANROOM_RESEARCH.md`
-- `docs/PPPP_CLEANROOM_TRANSPORT.md`
-
-Current likely path:
+The App image pins:
 
 ```text
-MpegTsIngestMux._pump_output()
- -> ChunkedIngestSink.finish()
- -> send terminal HTTP chunk `0\r\n\r\n`
- -> wait for HTTP response with getresponse()/read()
- -> any OSError/http.client.HTTPException
- -> GO2RTC_INGEST_FAILED
- -> mux.finish() fails despite source + producer + RTSP consumer already passing
+GO2RTC_VERSION=1.9.14
 ```
 
-Confirm the exact lifecycle in code before changing anything.
+Verify this remains true in `yi_home/Dockerfile` before editing anything.
 
-## Required behavior
-
-### 1. Do not blanket-ignore GO2RTC_INGEST_FAILED
-
-Streaming-phase ingest failure must remain fatal.
-
-The following must still fail CR-4C:
-
-- failure opening the POST;
-- failure sending the first MPEG-TS chunk;
-- failure sending any MPEG-TS chunk while source/consumer proof is still in progress;
-- invalid TS framing;
-- HTTP response with status >= 400 when a valid response is actually received;
-- premature producer loss before RTSP proof completes;
-- go2rtc process exit;
-- mux failure/backpressure;
-- any failure before `source_media_result=PASS` and `rtsp_consumer_result=PASS`.
-
-### 2. Separate streaming failure from terminal-finalization outcome
-
-Refactor `ChunkedIngestSink.finish()` / `MpegTsIngestMux._pump_output()` so the code can distinguish at least:
-
-- normal HTTP final response success;
-- exact peer EOF/`http.client.RemoteDisconnected` while waiting for the HTTP response **after the terminal chunk was successfully sent**;
-- terminal-chunk send failure;
-- timeout/reset/other socket or HTTP protocol failure;
-- explicit HTTP >=400 response.
-
-Do not collapse all of these to one generic category internally.
-
-Use secret-safe stage names only. Example result/status names are acceptable:
+For upstream go2rtc v1.9.14, tag commit:
 
 ```text
-ingest_finalize_mode=http_response
-ingest_finalize_mode=peer_closed_after_terminal
+b5948cfb25404cc5cb37b166ecaa2dca20b11d4b
 ```
 
-or equivalent booleans/enums.
+Relevant upstream files:
 
-Do not print exception text, endpoint data, payloads, headers, or media bytes.
+```text
+internal/mpegts/mpegts.go
+pkg/mpegts/producer.go
+```
 
-### 3. Conservative acceptance rule
+The v1.9.14 `POST /api/stream.ts?dst=...` handler does:
 
-A peer close after the terminal chunk may be treated as a successful bounded-research finalization **only** when all of these are true:
+```text
+mpegts.Open(r.Body)
+stream.AddProducer(client)
+client.Start()
+if Start returns any error -> http.Error(..., HTTP 500)
+```
 
-- the terminal chunk was sent successfully;
-- TS framing remained valid;
-- positive MPEG-TS bytes were published;
-- go2rtc producer was previously registered and media-ready;
-- the RTSP consumer result is already PASS with expected codecs/formats and positive packet counts;
-- the sustained source gate is PASS;
-- no earlier ingest/mux/pump failure occurred;
-- STOP 767 is sent;
-- consumer, go2rtc, and clean transport cleanup complete.
+The v1.9.14 MPEG-TS `Producer.Start()` is an infinite read loop and returns the first `ReadPacket(...)` error; it has no normal `nil` completion path. Therefore a finite chunked request that has streamed successfully and then reaches clean body EOF can surface at the HTTP layer as a 500 carrying the read error, even though the producer was valid and consumers already received media.
 
-Do not infer those high-level conditions inside the low-level HTTP sink if that makes layering worse. Prefer returning a classified finalization result upward and letting `probe_rtsp_publish.py` apply the CR-4C PASS policy.
+This is the key difference from a genuine mid-stream ingest rejection. Do **not** solve it by accepting arbitrary HTTP 500 responses.
 
-### 4. Keep exact `RemoteDisconnected` scope narrow
+If useful, independently re-check the exact upstream v1.9.14 sources. Do not copy upstream implementation code; this task only relies on endpoint semantics.
 
-If the implementation uses `http.client.RemoteDisconnected`, catch/classify it separately before broad OSError/HTTPException handling.
+## Required fix
 
-Do **not** automatically accept:
+### 1. Classify exact terminal go2rtc EOF, not arbitrary HTTP errors
 
-- `BrokenPipeError` while sending the terminal chunk;
-- `ConnectionResetError` before terminal send is confirmed;
-- socket timeout;
+Update the research-only `ChunkedIngestSink.finish()` so it reads a **small bounded response body** before classifying HTTP status.
+
+Add a distinct safe finalization mode, for example:
+
+```text
+ingest_finalize_mode=go2rtc_eof_after_terminal
+```
+
+The mode may be returned **only** when all low-level conditions are true:
+
+- the terminal chunk `0\r\n\r\n` was sent successfully;
+- a valid HTTP response was received;
+- HTTP status is exactly `500`;
+- the bounded response body, after ASCII-safe whitespace trimming, is exactly the known EOF marker `EOF`;
+- no exception occurred while reading that bounded body.
+
+Do not print or persist the response body. Only print the safe mode and, optionally, an integer field such as:
+
+```text
+ingest_finalize_http_status=500
+```
+
+Do not hash the body.
+
+If actual local unit/integration evidence shows the exact v1.9.14 clean EOF body differs, stop and report rather than broadening the matcher. Do not accept `unexpected EOF`, prefixes/suffixes, arbitrary text containing `EOF`, empty bodies, HTML, or other 500 bodies without a separately justified task.
+
+### 2. Preserve existing accepted terminal modes
+
+Keep the already-implemented modes:
+
+```text
+http_response
+peer_closed_after_terminal
+```
+
+A normal 2xx/3xx response remains `http_response`.
+
+Exact `http.client.RemoteDisconnected` from `getresponse()` after a successfully sent terminal chunk remains `peer_closed_after_terminal` under the existing narrow rule.
+
+The new go2rtc EOF mode is a third narrow outcome, not a replacement.
+
+### 3. All other HTTP rejection cases stay fatal
+
+Keep fatal:
+
+- any HTTP 4xx;
+- HTTP 500 with any body other than exact trimmed `EOF`;
+- HTTP 501–599;
 - malformed HTTP response;
-- HTTP status >=400;
-- any mid-stream send failure.
+- timeout;
+- connection reset;
+- failure reading response body;
+- terminal-chunk send failure;
+- first-chunk failure;
+- any mid-stream send failure;
+- producer loss before proof;
+- TS framing failure;
+- FFmpeg/mux/backpressure failure.
 
-If offline inspection shows go2rtc has another deterministic clean-close behavior, model it explicitly and test it. Do not broadly accept all close/reset conditions.
+Use existing stage-specific categories. `GO2RTC_INGEST_REJECTED` is still appropriate for a real HTTP rejection that does not match the exact terminal EOF classification.
 
-### 5. Preserve CR-4B and audio-drop fix
+### 4. High-level CR-4C PASS gate stays strict
+
+The low-level sink should only classify the terminal outcome. The top-level `probe_rtsp_publish.py` may accept `go2rtc_eof_after_terminal` only if **all** existing proof/cleanup gates are true:
+
+- sustained source PASS;
+- valid H.264 I/P and valid AAC source activity for the configured minimum span;
+- valid TS framing and positive published MPEG-TS bytes;
+- producer registered + media-ready;
+- RTSP consumer PASS;
+- RTSP H.264 1920x1080;
+- RTSP AAC 16 kHz mono;
+- positive RTSP video/audio packet counts;
+- minimum RTSP consumer active span;
+- no previous ingest/mux/coordinator failure;
+- STOP 767 sent;
+- RTSP consumer stopped;
+- temporary go2rtc stopped;
+- clean PPPP session closed.
+
+Do not weaken any of these conditions.
+
+### 5. Audio-drop policy
+
+Do not change the shared CR-4B default:
+
+```text
+max_audio_validation_drops=0
+```
+
+Do not silently change the CR-4C parser default of `3` in this task.
+
+The latest manual run used `12` only as an explicit bounded retry override and observed 2 drops. Document that distinction. The next manual live command may again pass `--max-audio-validation-drops 12` explicitly so finalization can be tested without the earlier small-limit variability. `12` is not a protocol invariant or production default.
+
+### 6. Isolation and production stability
 
 Do not change:
 
-- CR-4B strict default `max_audio_validation_drops=0`;
-- CR-4C default `--max-audio-validation-drops 3`;
-- only `AudioUnitValidationError` being droppable;
-- dropped units not affecting valid counts/timing/mux;
-- `AUDIO_VALIDATION_DROP_LIMIT` behavior.
-
-### 6. Preserve isolation
-
-Do not change:
-
-- loopback-only go2rtc;
-- synthetic stream `yi_cr4c_probe`;
-- rejection of production ports 1984/8554;
-- defaults 11984/18554;
-- no host mapping;
-- no production publisher/lifecycle/HA/Frigate changes;
-- no saved media.
-
-### 7. Better safe diagnostics
-
-For the next manual run, print enough sanitized state to classify finalization without packet data. Suggested fields:
-
-```text
-mpegts_mux_started=true
-ingest_connected=true
-mpegts_published_bytes=<count>
-ingest_finalize_mode=<safe-enum>
-```
-
-If finalization is fatal, use a stage-specific category such as:
-
-```text
-GO2RTC_INGEST_FINALIZE_SEND_FAILED
-GO2RTC_INGEST_FINALIZE_TIMEOUT
-GO2RTC_INGEST_FINALIZE_PROTOCOL_FAILED
-GO2RTC_INGEST_REJECTED
-```
-
-Exact names may differ, but avoid reverting to an ambiguous generic category for terminal-only failures.
+- temporary research go2rtc only;
+- loopback-only binds;
+- synthetic `yi_cr4c_probe` identity;
+- research API/RTSP defaults 11984/18554;
+- production-port rejection for 1984/8554;
+- no Docker host mapping;
+- no Home Assistant/Frigate integration in this gate;
+- no saved H.264/AAC/MPEG-TS;
+- no production App lifecycle/publisher changes;
+- no proprietary binary or APK additions.
 
 ## Offline tests required
 
-Add tests proving at least:
+Add or adjust focused tests proving at least:
 
-1. mid-stream POST send failure remains fatal.
-2. first-chunk send failure remains fatal.
-3. terminal chunk send failure remains fatal.
-4. exact `RemoteDisconnected` from `getresponse()` after terminal chunk send is classified separately.
-5. that classified peer-close result is accepted by CR-4C only when source PASS + producer-ready + RTSP consumer PASS + positive published bytes + clean mux/cleanup are all present.
-6. the same peer-close is **not** enough to pass if RTSP consumer failed or source gate failed.
-7. HTTP >=400 remains fatal.
-8. timeout/reset/protocol errors remain fatal unless explicitly justified by deterministic go2rtc behavior and covered by a narrow test.
-9. normal HTTP response success still passes.
-10. `MpegTsIngestMux.finish()` still validates FFmpeg exit, pump completion, TS framing, and positive published bytes.
-11. CR-4B tests remain unchanged/green.
-12. audio-validation-drop tests remain green.
-13. all CR-2/3/4/4B/4C tests remain green.
-14. self-test/support/RTSP-support smoke remain process/network-safe as currently defined.
-15. relocated `/tmp/yi-cr4c/...` execution remains valid.
+1. HTTP 200 final response still yields `http_response`.
+2. exact `RemoteDisconnected` after terminal send still yields `peer_closed_after_terminal`.
+3. exact HTTP 500 + bounded body `EOF\n` yields the new `go2rtc_eof_after_terminal` mode.
+4. exact HTTP 500 + body `EOF` also matches after whitespace trim if that is the chosen normalization.
+5. HTTP 500 + empty body remains fatal.
+6. HTTP 500 + `unexpected EOF` remains fatal.
+7. HTTP 500 + `some EOF` remains fatal.
+8. HTTP 500 + oversized body is not accepted.
+9. HTTP 400 + body `EOF` remains fatal.
+10. HTTP 503 + body `EOF` remains fatal.
+11. response-body read timeout remains fatal.
+12. response-body protocol/reset error remains fatal.
+13. terminal send failure remains fatal.
+14. first-chunk and mid-stream send failures remain fatal.
+15. top-level CR-4C accepts the new EOF mode only when every source/TS/producer/RTSP/STOP/cleanup condition is PASS.
+16. the new EOF mode alone cannot rescue a failed source gate, failed RTSP gate, zero TS bytes, failed STOP, or failed cleanup.
+17. current audio-drop-policy tests remain green.
+18. CR-4B stays strict by default and all CR-2/3/4/4B/4C focused tests remain green.
+19. self-test/support/RTSP-support smoke modes remain free of live camera traffic.
+20. relocated `/tmp/yi-cr4c/...` execution remains valid.
 
-Use fakes/synthetic bytes only. No real media fixtures and no live network/device traffic.
+Use synthetic fakes only for unit tests. Do not add raw camera media fixtures.
+
+If practical without complicating the runner, an additional App-image **loopback-only, no-camera** integration check against the pinned `/usr/local/bin/go2rtc` may be added to verify that a finite valid synthetic MPEG-TS POST ends with the expected 500/EOF behavior. This check must use synthetic FFmpeg-generated media, temporary research ports, no external network, no camera material, and full cleanup. It is optional; do not make the patch large just to add it.
 
 ## Documentation
 
-Update docs narrowly with the second live evidence:
+Update `docs/PPPP_CLEANROOM_RESEARCH.md` and `docs/PPPP_CLEANROOM_TRANSPORT.md` narrowly:
 
-- source sustained gate PASS;
-- 3 bounded audio validation drops;
-- producer registered/media-ready;
-- RTSP consumer PASS for >10 seconds with H.264 1920x1080 + AAC 16k mono and positive packet counts;
-- final CR-4C result remained FAIL only due terminal `GO2RTC_INGEST_FAILED`;
-- CR-4C remains `LIVE UNPROVEN` until the finalization path is fixed and a subsequent manual run returns `cr4c_result=PASS`.
+- record the latest source PASS: 32.168 s, 10 I, 509 P, 519 reordered, 516 valid AAC, 2 bounded drops;
+- record RTSP PASS: H.264 1920x1080 + AAC 16 kHz mono, 160 video packets, 125 audio packets, 10.540 s;
+- record final failure `GO2RTC_INGEST_REJECTED`;
+- explain the pinned go2rtc 1.9.14 handler/producer EOF semantics without copying code;
+- state that only exact HTTP 500 + exact EOF body after successful terminal send is newly classifiable;
+- keep CR-4C **LIVE UNPROVEN** until a subsequent manual run returns PASS.
 
-Do not record real stable IDs, server endpoints, credentials, or raw media.
+Never add real stable ID, DID/UID, YI server endpoints, credentials, packet/media bytes, pcap, APK, or proprietary library content.
 
 ## Validation before push
 
@@ -253,7 +266,7 @@ python3 -m py_compile tools/pppp_cleanroom/*.py
 python3 tools/pppp_cleanroom/probe_rtsp_publish.py --self-test
 ```
 
-Also preserve current Linux App-image smoke tests, startup validation, and Docker build.
+Preserve Linux CI, Docker build/startup validation, and App-image support smokes.
 
 ## Stop condition
 
@@ -261,9 +274,8 @@ After tests and CI pass:
 
 1. commit and push only `pppp-cleanroom`;
 2. keep PR #2 open and draft;
-3. do not run live device traffic;
-4. report exact commit SHA, changed files, test totals, and exact new safe output/finalization classification;
-5. provide manual copy/self-test/smoke/live commands for one next HAOS retry;
-6. explicitly state what exact terminal condition is now accepted and which terminal/mid-stream failures remain fatal.
-
-Do not merge, tag, release, switch production transport, or alter the running App.
+3. do not run live camera traffic;
+4. report exact commit SHA and test totals;
+5. state the exact HTTP status/body pair accepted and every case that remains fatal;
+6. provide the next manual HAOS copy/self-test/smoke/live commands, with `--max-audio-validation-drops 12` explicitly in the live command;
+7. do not merge, tag, release, change production transport, or restart/alter the installed App.
