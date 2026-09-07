@@ -198,6 +198,10 @@ def _collect_sustained(
     args: argparse.Namespace,
     mux: Any,
     clock: Callable[[], float] = time.monotonic,
+    *,
+    progress_hook: Callable[[SustainedCollector], None] | None = None,
+    completion: Callable[[], bool] | None = None,
+    incomplete_category: str = "MEDIA_SUSTAIN_TIMEOUT",
 ) -> SustainedCollector:
     readers = {
         channel: TnpUnitReader(channel, args.max_record_bytes) for channel in (1, 2, 3)
@@ -219,7 +223,13 @@ def _collect_sustained(
                     raise ProbeError(exc.category) from exc
             else:
                 collector.accept(channel, unit, clock())
-                if collector.progress.passed and mux.started:
+                if progress_hook is not None:
+                    progress_hook(collector)
+                if (
+                    collector.progress.passed
+                    and mux.started
+                    and (completion is None or completion())
+                ):
                     return collector
 
             now = clock()
@@ -228,6 +238,10 @@ def _collect_sustained(
                 raise ProbeError("MEDIA_START_TIMEOUT")
             if last is not None and now - last >= args.media_stall_timeout:
                 raise ProbeError("MEDIA_SUSTAIN_TIMEOUT")
+    if progress_hook is not None:
+        progress_hook(collector)
+    if collector.progress.passed and completion is not None and not completion():
+        raise ProbeError(incomplete_category)
     raise ProbeError("MEDIA_SUSTAIN_TIMEOUT")
 
 

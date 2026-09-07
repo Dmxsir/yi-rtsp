@@ -25,4 +25,10 @@ jobs:
         run: bash -n yi_home/run.sh
 
       - name: Build App image
-        run: docker build --build-arg BUILD_VERSION=0.2.0-beta.1 yi_home
+        run: docker build --tag yi-rtsp-ci --build-arg BUILD_VERSION=0.2.0-beta.1 yi_home
+
+      - name: Validate isolated CR-4C support in App image
+        run: |
+          docker run --rm --volume "${GITHUB_WORKSPACE}:/tmp/yi-cr4c:ro" --entrypoint python3 yi-rtsp-ci /tmp/yi-cr4c/tools/pppp_cleanroom/probe_rtsp_publish.py --self-test
+          docker run --rm --volume "${GITHUB_WORKSPACE}:/tmp/yi-cr4c:ro" --entrypoint python3 yi-rtsp-ci /tmp/yi-cr4c/tools/pppp_cleanroom/probe_rtsp_publish.py --support-smoke-test --app-source /opt/yi-home/app
+          docker run --rm --volume "${GITHUB_WORKSPACE}:/tmp/yi-cr4c:ro" --entrypoint python3 yi-rtsp-ci /tmp/yi-cr4c/tools/pppp_cleanroom/probe_rtsp_publish.py --rtsp-support-smoke-test --app-source /opt/yi-home/app

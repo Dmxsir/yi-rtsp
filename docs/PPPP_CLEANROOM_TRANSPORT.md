@@ -3,8 +3,9 @@
 Status: offline implementation is complete for the observed F1 direct-session
 subset. CR-2 establishment, CR-3 reliable channel-0/TNP through valid `4882`,
 and CR-4 real H.264 I/P plus AAC parsing are live-proven on one owned `y291ga`
-/ raw model `83` direct path. CR-4B sustained media/mux is OFFLINE IMPLEMENTED
-/ LIVE UNPROVEN.
+with raw model `83` on a direct path. CR-4B sustained media/mux is also LIVE
+PROVEN on that one path. CR-4C temporary loopback publication is OFFLINE
+IMPLEMENTED / LIVE UNPROVEN.
 
 This specification contains only sanitized transport observations. It does not
 contain a real device identifier, endpoint, InitString, license, key, password,
@@ -62,10 +63,16 @@ TNP payload, media payload, pcap, APK, or proprietary library.
 - A controlled CR-4 run on that path reconstructed independent channel-1/2/3
   TNP records and passed real H.264 I/P plus AAC through the existing parsers
   and video reorder logic before stop and close.
+- A controlled CR-4B run on that path sustained clean media for 33.124 seconds,
+  observed 10 I-frames, 531 P-frames, 541 reordered video frames, and 540 AAC
+  frames, then validated 1,243,808 bytes of framed MPEG-TS as H.264 1920x1080
+  plus AAC 16 kHz mono. It recorded zero DRW retries and no D2 during that run,
+  then sent `767` and closed.
 
 Sanitized live evidence: [`PPPP_CR2_LIVE_01.md`](PPPP_CR2_LIVE_01.md),
 [`PPPP_CR3_LIVE_01.md`](PPPP_CR3_LIVE_01.md), and
-[`PPPP_CR4_LIVE_01.md`](PPPP_CR4_LIVE_01.md).
+[`PPPP_CR4_LIVE_01.md`](PPPP_CR4_LIVE_01.md), and
+[`PPPP_CR4B_LIVE_01.md`](PPPP_CR4B_LIVE_01.md).
 
 ### INFERRED
 
@@ -93,8 +100,7 @@ Sanitized live evidence: [`PPPP_CR2_LIVE_01.md`](PPPP_CR2_LIVE_01.md),
 - ALIVE four-byte field semantics and whether other models require other values.
 - Relay, wakeup, F2, IPv6, and non-direct paths.
 - Whether CLOSE has an acknowledgement; none was observed.
-- Sustained clean media on real hardware and behavior under loss.
-- Clean-media MPEG-TS/ffprobe validation on the live path.
+- Sustained clean media behavior under loss or over long sessions.
 - RTSP/go2rtc/Frigate parity through the clean transport.
 - Production timing, retry, window, chunk, buffer, and timeout limits.
 
@@ -265,10 +271,11 @@ and transport close after startup.
 Offline tests prove the implemented channel, stream-reader, synthetic parser,
 cleanup, self-test, support-loader, and nested-relocation mechanics. The live
 run recorded in [`PPPP_CR4_LIVE_01.md`](PPPP_CR4_LIVE_01.md) additionally
-proved real H.264 I/P and AAC parsing on one owned direct path. Sustained media,
-loss behavior, and production parity remain unproven.
+proved real H.264 I/P and AAC parsing on one owned direct path. CR-4B later
+proved sustained media on that path; loss behavior and production parity remain
+unproven.
 
-## CR-4B sustained media/mux model — OFFLINE IMPLEMENTED / LIVE UNPROVEN
+## CR-4B sustained media/mux model — LIVE PROVEN
 
 `probe_sustained_mux.py` preserves the proven startup and media parser path, but
 requires valid I, P, and AAC observations to span the configured minimum active
@@ -288,7 +295,36 @@ or capture file and prints no payload or absolute camera timestamp.
 Offline tests establish the duration gate, parser/reorder feed boundary, A/V
 offset, bounded pre-mux state, starvation/error propagation, output draining,
 metadata rejection, EPIPE, early-exit/timeout cleanup, and nested isolation.
-They do not establish sustained hardware or live mux success.
+The controlled run in [`PPPP_CR4B_LIVE_01.md`](PPPP_CR4B_LIVE_01.md) proved
+the full sustained source and pipe-only mux/ffprobe boundary on one owned direct
+`y291ga` path. It does not establish loss tolerance, long-session behavior, or
+compatibility with other hardware/firmware.
+
+## CR-4C temporary RTSP publication model — OFFLINE IMPLEMENTED / LIVE UNPROVEN
+
+`probe_rtsp_publish.py` keeps the source path identical through the CR-4B
+collector and shared FFmpeg command, then replaces only the pipe validator sink
+with `rtsp_publish.py`'s bounded publication sink. The sink waits for complete
+MPEG-TS packets before opening its POST, streams them through the existing
+go2rtc incoming MPEG-TS endpoint semantics, retains at most one partial packet,
+and persists no media.
+
+The runner owns one temporary go2rtc child and generated config/log beneath
+`/tmp/yi-cr4c`. Its only stream is the fixed synthetic `yi_cr4c_probe`; API and
+RTSP listen on `127.0.0.1` using non-production defaults `11984` and `18554`,
+and WebRTC is disabled. Ports `1984` and `8554` are rejected, occupied ports
+hard-fail, and the runner neither imports nor invokes the normal App publisher
+or lifecycle.
+
+After ingest begins, the coordinator requires an exact one-stream go2rtc
+registry and a registered MPEG-TS producer with non-empty media information.
+Only then does a bounded local ffprobe consumer read
+`rtsp://127.0.0.1:18554/yi_cr4c_probe`. PASS requires H.264 1920x1080, AAC
+16 kHz mono, positive packet counts for both streams, the configured consumer
+span, the unchanged CR-4B sustained source gate, successful `767`, and cleanup
+of all processes, sockets, threads, and temporary files. These mechanics are
+offline-tested; real-device go2rtc/RTSP and Home Assistant/Frigate parity remain
+UNKNOWN.
 
 ## Running the safe checks
 
@@ -302,7 +338,10 @@ python3 tools/pppp_cleanroom/probe_media_tnp.py --support-smoke-test
 python3 tools/pppp_cleanroom/probe_sustained_mux.py --self-test
 python3 tools/pppp_cleanroom/probe_sustained_mux.py --support-smoke-test
 python3 tools/pppp_cleanroom/probe_sustained_mux.py --mux-support-smoke-test
-python3 -m unittest tests.test_pppp_cleanroom tests.test_pppp_cr4 tests.test_pppp_cr4b -v
+python3 tools/pppp_cleanroom/probe_rtsp_publish.py --self-test
+python3 tools/pppp_cleanroom/probe_rtsp_publish.py --support-smoke-test
+python3 tools/pppp_cleanroom/probe_rtsp_publish.py --rtsp-support-smoke-test
+python3 -m unittest tests.test_pppp_cleanroom tests.test_pppp_cr4 tests.test_pppp_cr4b tests.test_pppp_cr4c -v
 ```
 
 For the offline CR-3 relocation check, keep its four clean-room files together:
@@ -337,6 +376,11 @@ For CR-4B use the same structure under `/tmp/yi-cr4b`, adding
 perform no cloud or device traffic; the mux smoke only checks executable
 availability and command construction and starts no process.
 
+For CR-4C preserve the same nested layout under `/tmp/yi-cr4c` and add
+`probe_rtsp_publish.py` plus `rtsp_publish.py`. Its self-test and support smoke
+start no process or socket; the separate RTSP-support smoke only checks local
+binary availability plus safe config/command construction.
+
 ## Current progress
 
 ### PROVEN
@@ -365,8 +409,12 @@ availability and command construction and starts no process.
   valid `4882`, then `767` and close.
 - The same owned path completed CR-4 with real H.264 I/P reorder and AAC parser
   acceptance through clean media channels, then `767` and close.
-- CR-4B duration/count gating, parser-to-mux ordering, bounded queues, pipe-only
-  TS pumping/metadata validation, cleanup, and relocation pass offline tests.
+- The same owned path completed CR-4B with 33.124 seconds of sustained media,
+  zero DRW retries, no observed D2, and 1,243,808 bytes of framed MPEG-TS
+  validated as the expected H.264/AAC formats, then `767` and close.
+- CR-4C loopback-only temporary config, complete-TS prebuffer/chunked ingest,
+  producer readiness, bounded RTSP metadata/packet/span validation, cleanup,
+  smoke isolation, and relocation pass offline tests.
 
 ### INFERRED
 
@@ -374,13 +422,13 @@ availability and command construction and starts no process.
   sufficient for a short media validation.
 - Retry/window/chunk/buffer/keepalive/timeout defaults and any new media timing
   assumptions are experimental until measured live.
-- Mux timing beyond the already-used SETTS expressions remains inferred for the
-  clean live path.
+- Temporary publication timing and process limits remain experimental until a
+  manual CR-4C run.
 
 ### UNKNOWN
 
 - Legacy-punch acceptance on other YI models/firmware and non-direct paths.
 - Loss behavior and long-session D2 requirements on YI hardware.
-- Sustained clean media and clean-media MPEG-TS/ffprobe success on real hardware.
-- F2, relay, wakeup, IPv6, RTSP/go2rtc/Frigate parity, and production timing
-  limits.
+- F2, relay, wakeup, and IPv6 paths.
+- RTSP/go2rtc real-device parity, Home Assistant/Frigate parity, and production
+  timing limits.

@@ -324,13 +324,45 @@ Success criterion:
 - valid channel-1 AAC
 - existing sequence reorder accepts the video frames
 
-### CR-4B — sustained media and relay/mux boundary — OFFLINE IMPLEMENTED / LIVE UNPROVEN
+### CR-4B — sustained media and relay/mux boundary — LIVE PROVEN FOR ONE `y291ga` PATH
 
 `tools/pppp_cleanroom/probe_sustained_mux.py` extends the proven parser path without changing the CR-4 runner. It requires independently sustained I-frame, P-frame, and AAC activity spans, conservative configurable counts, continued bounded channel/TNP/pre-mux state, and the existing sequence reorder behavior. It starts the mux incrementally once the first accepted reordered video and validated AAC are available rather than retaining the full run in memory.
 
 `tools/pppp_cleanroom/mux_pipe.py` applies the existing relay's H.264/AAC copy-mux and 90 kHz SETTS expressions, continuously drains FFmpeg MPEG-TS stdout into ffprobe stdin, validates TS packet framing plus H.264 1920x1080 and AAC 16 kHz mono metadata, and bounds process waits and pump chunks. It persists and prints no media bytes. Offline tests cover duration/count gating, parser/reorder feed order, A/V offset calculation, queue bounds, starvation and transport failure propagation, TS pumping, validator EPIPE, invalid streams, early exits, timeouts, cleanup, and nested isolated loading.
 
-The initial duration/count/buffer/process defaults are experimental. Real sustained clean media and pipe-only mux validation remain unproven until the user performs the bounded manual CR-4B run.
+On 2026-09-07 a bounded manual run on the same owned `y291ga` / raw model `83` direct-LAN path proved this gate. The safe metrics were:
+
+```text
+media_active_seconds=33.124
+video_i_frames=10
+video_p_frames=531
+video_reordered_frames=541
+audio_frames=540
+channel1_tnp_units=540
+channel2_tnp_units=10
+channel3_tnp_units=531
+aac_sample_rate=16000
+aac_channels=1
+initial_av_delta_ms=35
+drw_retries=0
+d2_observed=0
+mpegts_bytes_observed=1243808
+ffprobe_video_codec=h264
+ffprobe_video_size=1920x1080
+ffprobe_audio_codec=aac
+ffprobe_audio_sample_rate=16000
+ffprobe_audio_channels=1
+```
+
+The source duration gate, FFmpeg copy-mux, MPEG-TS framing, ffprobe metadata validation, `767`, and clean close all passed. This is evidence for that one run only; the duration/count/buffer/process defaults, loss behavior, and longer-session behavior remain experimental. Sanitized report: [`PPPP_CR4B_LIVE_01.md`](PPPP_CR4B_LIVE_01.md).
+
+### CR-4C — temporary clean RTSP publication — OFFLINE IMPLEMENTED / LIVE UNPROVEN
+
+`tools/pppp_cleanroom/probe_rtsp_publish.py` reuses the CR-4B collector, parsers, reorder logic, FFmpeg copy-mux command, and timestamp expressions. It owns a separate temporary go2rtc child under `/tmp/yi-cr4c`, with fixed synthetic stream identity `yi_cr4c_probe`, loopback-only API/RTSP listeners, WebRTC disabled, and non-production default ports `11984` and `18554`. It rejects production ports `1984` and `8554` and hard-fails if either selected loopback port is already occupied.
+
+The research-only MPEG-TS pump obtains complete TS packets before opening the HTTP chunked POST, uses the same `/api/stream.ts?dst=...` headers as the production publisher, retains only a bounded partial TS packet, and writes no media to disk or stdout. The coordinator requires an exact one-stream registry and a media-ready MPEG-TS producer before starting a bounded loopback RTSP ffprobe consumer. PASS additionally requires H.264 1920x1080, AAC 16 kHz mono, positive audio/video packet counts, and the configured minimum consumer interval while the CR-4B source duration gate remains active.
+
+Offline tests cover port/config isolation, startup/early-exit/timeout and terminate/kill paths, temporary cleanup, ingest prebuffer/chunk framing/errors, producer readiness, RTSP format/packet/span failures, orchestration cleanup, and nested relocation. Self and smoke modes start no process or socket. No normal App publisher, lifecycle, registry, discovery, Home Assistant, Frigate, or external port mapping is called or changed. Actual go2rtc/RTSP behavior on the owned camera remains unknown until the user performs the manual CR-4C run.
 
 ### CR-5 — YI server rendezvous
 
@@ -360,4 +392,4 @@ Only after clean PPPP passes repeated real-world parity tests should the App sto
 
 The evidence audit, packet contract, state machine, implementation limits and PROVEN / INFERRED / UNKNOWN ledger are in [`PPPP_CLEANROOM_TRANSPORT.md`](PPPP_CLEANROOM_TRANSPORT.md).
 
-CR-2 direct F1, CR-3 reliable channel-0/TNP through the first valid `4882`, and CR-4 real H.264 I/P plus AAC parsing are live-proven on one owned `y291ga` direct-LAN path. CR-4B sustained collection and pipe-only MPEG-TS/ffprobe validation are offline implemented but remain live unproven. Sustained loss behavior, other models, F2, relay, wakeup, IPv6, long-session D2 behavior, RTSP/go2rtc/Frigate parity, and production timing limits remain unknown. No production publication path or transport default is enabled by this work.
+CR-2 direct F1, CR-3 reliable channel-0/TNP through the first valid `4882`, CR-4 real H.264 I/P plus AAC parsing, and CR-4B sustained clean media plus pipe-only MPEG-TS/ffprobe validation are live-proven on one owned `y291ga` direct-LAN path. CR-4C temporary loopback go2rtc publication and RTSP validation are offline implemented but remain live unproven. Sustained loss behavior, other models, F2, relay, wakeup, IPv6, long-session D2 behavior, RTSP/go2rtc real-device parity, Home Assistant/Frigate parity, and production timing limits remain unknown. No production publication path or transport default is enabled by this work.
