@@ -18,6 +18,7 @@ try:
         CR4CError,
         DEFAULT_API_PORT,
         DEFAULT_RTSP_PORT,
+        INGEST_FINALIZE_GO2RTC_EOF,
         INGEST_FINALIZE_HTTP_RESPONSE,
         INGEST_FINALIZE_PEER_CLOSED,
         STREAM_NAME,
@@ -41,6 +42,7 @@ except ImportError:  # Direct execution from a relocated clean-room directory.
         CR4CError,
         DEFAULT_API_PORT,
         DEFAULT_RTSP_PORT,
+        INGEST_FINALIZE_GO2RTC_EOF,
         INGEST_FINALIZE_HTTP_RESPONSE,
         INGEST_FINALIZE_PEER_CLOSED,
         STREAM_NAME,
@@ -378,7 +380,11 @@ def _run_live(args: argparse.Namespace) -> int:
         and mux_result
         and mux_result.get("mpegts_published_bytes", 0) > 0
         and mux_result.get("ingest_finalize_mode")
-        in (INGEST_FINALIZE_HTTP_RESPONSE, INGEST_FINALIZE_PEER_CLOSED)
+        in (
+            INGEST_FINALIZE_HTTP_RESPONSE,
+            INGEST_FINALIZE_PEER_CLOSED,
+            INGEST_FINALIZE_GO2RTC_EOF,
+        )
         and coordinator
         and coordinator.done
         and producer

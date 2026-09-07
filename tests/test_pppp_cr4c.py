@@ -309,15 +309,19 @@ class ProducerReadinessTest(unittest.TestCase):
 
 class _Response:
     def __init__(
-        self, status: int = 200, read_error: BaseException | None = None
+        self,
+        status: int = 200,
+        body: bytes = b"",
+        read_error: BaseException | None = None,
     ) -> None:
         self.status = status
+        self.body = body
         self.read_error = read_error
 
-    def read(self, _limit: int) -> bytes:
+    def read(self, limit: int) -> bytes:
         if self.read_error is not None:
             raise self.read_error
-        return b""
+        return self.body[:limit]
 
 
 class _Connection:
@@ -326,12 +330,14 @@ class _Connection:
         *_args: object,
         fail_at: int | None = None,
         status: int = 200,
+        response_body: bytes = b"",
         response_error: BaseException | None = None,
         response_read_error: BaseException | None = None,
         **_kwargs: object,
     ) -> None:
         self.fail_at = fail_at
         self.status = status
+        self.response_body = response_body
         self.response_error = response_error
         self.response_read_error = response_read_error
         self.sent: list[bytes] = []
@@ -356,7 +362,9 @@ class _Connection:
     def getresponse(self) -> _Response:
         if self.response_error is not None:
             raise self.response_error
-        return _Response(self.status, self.response_read_error)
+        return _Response(
+            self.status, self.response_body, self.response_read_error
+        )
 
     def close(self) -> None:
         self.closed = True
@@ -449,21 +457,79 @@ class IngestTest(unittest.TestCase):
         self.assertTrue(sink.finished)
         self.assertEqual(connection.sent[-1], b"0\r\n\r\n")
 
+    def test_exact_go2rtc_eof_after_terminal_is_classified(self) -> None:
+        for body in (b"EOF", b"EOF\n"):
+            with self.subTest(body=body):
+                connection = _Connection(status=500, response_body=body)
+                sink = publish.ChunkedIngestSink(
+                    11984, 1.0, lambda *_a, **_k: connection
+                )
+                sink.open(b"first")
+                self.assertEqual(
+                    sink.finish(), publish.INGEST_FINALIZE_GO2RTC_EOF
+                )
+                self.assertTrue(sink.finished)
+                self.assertEqual(connection.sent[-1], b"0\r\n\r\n")
+
     def test_finalize_rejection_timeout_reset_and_protocol_remain_fatal(self) -> None:
         cases = (
-            (_Connection(status=500), "GO2RTC_INGEST_REJECTED"),
+            (_Connection(status=500), "empty_500", "GO2RTC_INGEST_REJECTED"),
+            (
+                _Connection(status=500, response_body=b"unexpected EOF"),
+                "unexpected_eof",
+                "GO2RTC_INGEST_REJECTED",
+            ),
+            (
+                _Connection(status=500, response_body=b"some EOF"),
+                "prefixed_eof",
+                "GO2RTC_INGEST_REJECTED",
+            ),
+            (
+                _Connection(
+                    status=500,
+                    response_body=b"EOF"
+                    + b" " * publish.FINALIZE_RESPONSE_BODY_LIMIT,
+                ),
+                "oversized_eof",
+                "GO2RTC_INGEST_REJECTED",
+            ),
+            (
+                _Connection(status=400, response_body=b"EOF"),
+                "http_400_eof",
+                "GO2RTC_INGEST_REJECTED",
+            ),
+            (
+                _Connection(status=503, response_body=b"EOF"),
+                "http_503_eof",
+                "GO2RTC_INGEST_REJECTED",
+            ),
             (
                 _Connection(response_error=socket.timeout()),
+                "response_timeout",
                 "GO2RTC_INGEST_FINALIZE_TIMEOUT",
             ),
             (
                 _Connection(response_error=ConnectionResetError()),
+                "response_reset",
                 "GO2RTC_INGEST_FINALIZE_PROTOCOL_FAILED",
             ),
             (
                 _Connection(
                     response_error=publish.http.client.BadStatusLine("synthetic")
                 ),
+                "malformed_response",
+                "GO2RTC_INGEST_FINALIZE_PROTOCOL_FAILED",
+            ),
+            (
+                _Connection(
+                    response_read_error=socket.timeout()
+                ),
+                "body_timeout",
+                "GO2RTC_INGEST_FINALIZE_TIMEOUT",
+            ),
+            (
+                _Connection(response_read_error=ConnectionResetError()),
+                "body_reset",
                 "GO2RTC_INGEST_FINALIZE_PROTOCOL_FAILED",
             ),
             (
@@ -472,11 +538,12 @@ class IngestTest(unittest.TestCase):
                         "synthetic"
                     )
                 ),
+                "body_remote_disconnect",
                 "GO2RTC_INGEST_FINALIZE_PROTOCOL_FAILED",
             ),
         )
-        for connection, category in cases:
-            with self.subTest(category=category):
+        for connection, name, category in cases:
+            with self.subTest(name=name):
                 sink = publish.ChunkedIngestSink(
                     11984, 1.0, lambda *_a, **_k: connection
                 )
@@ -547,6 +614,28 @@ class IngestTest(unittest.TestCase):
         result = mux.finish()
         self.assertEqual(
             result["ingest_finalize_mode"], publish.INGEST_FINALIZE_PEER_CLOSED
+        )
+        self.assertEqual(result["mpegts_published_bytes"], 188)
+
+    def test_mux_propagates_go2rtc_eof_finalize_mode(self) -> None:
+        packet = b"\x47" + bytes(187)
+        connection = _Connection(status=500, response_body=b"EOF\n")
+        sink = publish.ChunkedIngestSink(
+            11984, 1.0, lambda *_a, **_k: connection
+        )
+        mux = publish.MpegTsIngestMux(
+            "ffmpeg", lambda *_: "setts", sink, 1.0, 188
+        )
+        mux.started = True
+        mux._mux = _Process()
+        mux._mux.stdout = io.BytesIO(packet)
+        mux._video = io.BytesIO()
+        mux._audio = io.BytesIO()
+        mux._pump_output()
+        result = mux.finish()
+        self.assertEqual(
+            result["ingest_finalize_mode"],
+            publish.INGEST_FINALIZE_GO2RTC_EOF,
         )
         self.assertEqual(result["mpegts_published_bytes"], 188)
 
@@ -1101,6 +1190,8 @@ class RunnerOrchestrationTest(unittest.TestCase):
 
             def stop(self) -> None:
                 events.append("consumer_stop")
+                if fail_stage == "cleanup":
+                    raise publish.CR4CError("CR4C_CLEANUP_TIMEOUT")
                 self.consumer.stopped = True
 
         class Phase:
@@ -1194,14 +1285,15 @@ class RunnerOrchestrationTest(unittest.TestCase):
         )
         self.assertEqual(tuple(events), expected)
 
-    def test_peer_close_requires_every_existing_pass_gate(self) -> None:
-        result, output, _events = self._run(
-            finalize_mode=publish.INGEST_FINALIZE_PEER_CLOSED
-        )
-        self.assertEqual(result, 0)
-        self.assertIn(
-            "ingest_finalize_mode=peer_closed_after_terminal", output
-        )
+    def test_accepted_finalize_modes_require_every_existing_pass_gate(self) -> None:
+        for mode in (
+            publish.INGEST_FINALIZE_PEER_CLOSED,
+            publish.INGEST_FINALIZE_GO2RTC_EOF,
+        ):
+            with self.subTest(mode=mode):
+                result, output, _events = self._run(finalize_mode=mode)
+                self.assertEqual(result, 0)
+                self.assertIn(f"ingest_finalize_mode={mode}", output)
 
         result, output, _events = self._run(finalize_mode="unexpected")
         self.assertEqual(result, 2)
@@ -1215,10 +1307,11 @@ class RunnerOrchestrationTest(unittest.TestCase):
             "mux",
             "stop",
             "empty",
+            "cleanup",
         ):
             with self.subTest(stage=stage):
                 result, output, events = self._run(
-                    stage, publish.INGEST_FINALIZE_PEER_CLOSED
+                    stage, publish.INGEST_FINALIZE_GO2RTC_EOF
                 )
                 self.assertEqual(result, 2)
                 self.assertNotIn("cr4c_result=PASS", output)
@@ -1236,6 +1329,7 @@ class RunnerOrchestrationTest(unittest.TestCase):
             ("rtsp", "RTSP_FORMAT_INVALID"),
             ("mux", "MUX_EARLY_EXIT"),
             ("stop", "STOP_LIVE_FAILED"),
+            ("cleanup", "CR4C_CLEANUP_TIMEOUT"),
         ):
             with self.subTest(stage=stage):
                 result, output, events = self._run(stage)

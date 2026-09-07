@@ -43,6 +43,8 @@ DEFAULT_RTSP_PORT = 18554
 PRODUCTION_PORTS = frozenset((1984, 8554))
 INGEST_FINALIZE_HTTP_RESPONSE = "http_response"
 INGEST_FINALIZE_PEER_CLOSED = "peer_closed_after_terminal"
+INGEST_FINALIZE_GO2RTC_EOF = "go2rtc_eof_after_terminal"
+FINALIZE_RESPONSE_BODY_LIMIT = 64
 
 
 class CR4CError(RuntimeError):
@@ -374,17 +376,24 @@ class ChunkedIngestSink:
             except (OSError, http.client.HTTPException) as exc:
                 raise CR4CError("GO2RTC_INGEST_FINALIZE_PROTOCOL_FAILED") from exc
             else:
-                if response.status >= 400:
-                    raise CR4CError("GO2RTC_INGEST_REJECTED")
                 try:
-                    response.read(1024)
+                    body = response.read(FINALIZE_RESPONSE_BODY_LIMIT + 1)
                 except socket.timeout as exc:
                     raise CR4CError("GO2RTC_INGEST_FINALIZE_TIMEOUT") from exc
                 except (OSError, http.client.HTTPException) as exc:
                     raise CR4CError(
                         "GO2RTC_INGEST_FINALIZE_PROTOCOL_FAILED"
                     ) from exc
-                self.finalize_mode = INGEST_FINALIZE_HTTP_RESPONSE
+                if (
+                    response.status == 500
+                    and len(body) <= FINALIZE_RESPONSE_BODY_LIMIT
+                    and body.strip(b" \t\r\n") == b"EOF"
+                ):
+                    self.finalize_mode = INGEST_FINALIZE_GO2RTC_EOF
+                elif response.status >= 400:
+                    raise CR4CError("GO2RTC_INGEST_REJECTED")
+                else:
+                    self.finalize_mode = INGEST_FINALIZE_HTTP_RESPONSE
             self.finished = True
             return self.finalize_mode
         finally:
@@ -551,7 +560,11 @@ class MpegTsIngestMux:
             self._result is None
             or self.sink.published_bytes <= 0
             or self._finalize_mode
-            not in (INGEST_FINALIZE_HTTP_RESPONSE, INGEST_FINALIZE_PEER_CLOSED)
+            not in (
+                INGEST_FINALIZE_HTTP_RESPONSE,
+                INGEST_FINALIZE_PEER_CLOSED,
+                INGEST_FINALIZE_GO2RTC_EOF,
+            )
         ):
             raise CR4CError("MPEGTS_STREAM_INVALID")
         self.finished = True

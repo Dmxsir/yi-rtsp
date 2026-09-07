@@ -362,6 +362,24 @@ cleanup checks. Terminal send failure, timeout, reset/protocol failure, HTTP
 rejection, and opening or mid-stream ingest failure remain fatal. No such
 terminal outcome is accepted by CR-4B or production code.
 
+The latest bounded attempt on 2026-09-07 used the explicit experimental
+`--max-audio-validation-drops 12` override without changing the CR-4C default
+of `3`. The source gate passed for 32.168 seconds with 10 I-frames, 509
+P-frames, 519 reordered frames, 516 valid AAC frames, and 2 bounded drops.
+The producer registered and became media-ready, and RTSP passed for 10.540
+seconds with H.264 1920x1080, AAC 16 kHz mono, 160 video packets, and 125
+audio packets. `767` and cleanup completed, but terminal HTTP finalization
+reported `GO2RTC_INGEST_REJECTED`; CR-4C remains **LIVE UNPROVEN**.
+
+The App-pinned go2rtc 1.9.14 MPEG-TS producer returns its read-loop error when
+a finite request body reaches clean EOF, which the HTTP handler can expose as
+status 500 with body `EOF`. After a successfully sent terminal chunk, the
+research sink now classifies only exact HTTP 500 plus a small bounded body
+that trims to exactly `EOF` as `go2rtc_eof_after_terminal`. The top-level gate
+accepts that mode only with the unchanged source, valid/positive TS, producer,
+RTSP, `767`, and cleanup proofs. Other 500 bodies, all other HTTP rejections,
+and every socket, protocol, streaming, mux, or cleanup failure remain fatal.
+
 ## Running the safe checks
 
 From a repository checkout:

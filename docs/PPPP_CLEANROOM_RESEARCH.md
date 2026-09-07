@@ -372,6 +372,10 @@ The second bounded manual attempt on 2026-09-07 passed the sustained source gate
 
 Terminal ingest finalization now distinguishes a normal HTTP response from the exact `RemoteDisconnected` peer EOF observed only after the terminal chunk was sent successfully. The latter can satisfy this bounded research gate only through the existing source, producer, RTSP, positive-TS, `767`, mux, and cleanup checks. Terminal send failure, timeout, reset/protocol failure, HTTP rejection, and every opening or mid-stream ingest failure remain fatal with sanitized stage-specific categories. A subsequent manual PASS is still required.
 
+The latest bounded attempt on 2026-09-07 used the explicit experimental override `--max-audio-validation-drops 12` while leaving the CR-4C default at `3`. It passed the source gate for 32.168 seconds with 10 I-frames, 509 P-frames, 519 reordered video frames, 516 valid AAC frames, and 2 bounded audio-validation drops. The producer registered and became media-ready, and the loopback RTSP consumer passed for 10.540 seconds with H.264 1920x1080, AAC 16 kHz mono, 160 video packets, and 125 audio packets. `767` and all cleanup completed, but the final result remained FAIL with `GO2RTC_INGEST_REJECTED` after terminal HTTP finalization. CR-4C therefore remains **LIVE UNPROVEN**.
+
+The App pins go2rtc 1.9.14. Its MPEG-TS HTTP handler reports an error when the producer's read loop reaches the clean EOF of a finite request body, so that terminal condition can surface as HTTP 500 with body `EOF`. The research sink now classifies only an exact status `500` plus a small bounded body that trims to exactly `EOF`, after the terminal chunk was sent successfully, as `go2rtc_eof_after_terminal`. Arbitrary HTTP 500 responses and every other HTTP, socket, protocol, streaming, mux, or cleanup failure remain fatal, and the top-level source/producer/RTSP/TS/`767`/cleanup gates remain unchanged.
+
 ### CR-5 — YI server rendezvous
 
 Implement YI-specific server connection using cloud-supplied DID + InitString + license/device-key information.
