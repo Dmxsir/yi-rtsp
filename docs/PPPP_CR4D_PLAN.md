@@ -47,6 +47,20 @@ intended to be copied to `/tmp` inside the running Frigate container. It:
 - prints only sanitized codec/count/duration evidence;
 - does not mutate Frigate/go2rtc/Home Assistant configuration.
 
+## Offline validation
+
+GitHub Actions validated the implementation on the exact research branch head
+before manual PVE testing:
+
+- full Linux unittest suite: `107/107 PASS`;
+- existing CR-4C tests remained green;
+- CR-4D external-bind isolation tests passed;
+- Docker App image build passed;
+- App-image CR-4C self/support/RTSP smokes passed;
+- App-image `CR4D_SELF_TEST=PASS`;
+- App-image `CR4D_EXTERNAL_CONSUMER_SELF_TEST=PASS`;
+- no live device traffic was performed by CI.
+
 ## PASS condition
 
 CR-4D PASS requires evidence from the same bounded run that:
