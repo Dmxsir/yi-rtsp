@@ -47,6 +47,10 @@ intended to be copied to `/tmp` inside the running Frigate container. It:
 - prints only sanitized codec/count/duration evidence;
 - does not mutate Frigate/go2rtc/Home Assistant configuration.
 
+The first CR-4D run therefore needs no Frigate config edit, no Frigate restart,
+and no Home Assistant restart. The external verifier is a bounded process
+inside the existing Frigate container only for the duration of the test.
+
 ## Offline validation
 
 GitHub Actions validated the implementation on the exact research branch head
